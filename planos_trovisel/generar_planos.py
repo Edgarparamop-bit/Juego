@@ -410,7 +410,9 @@ def project(p, view):
 
 # --------------------------------------------------------------- dibujo
 LAYERS = {  # nombre: (color ACI, tipo de linea)
+    "RELLENO": (7, "CONTINUOUS"),
     "MADERA": (7, "CONTINUOUS"),
+    "TUBO": (8, "CONTINUOUS"),
     "TROVISEL": (5, "CONTINUOUS"),
     "HERRAJES": (30, "CONTINUOUS"),
     "COTAS": (1, "CONTINUOUS"),
@@ -421,6 +423,38 @@ LAYERS = {  # nombre: (color ACI, tipo de linea)
     "MARCO": (7, "CONTINUOUS"),
 }
 SVG_COLORS = {7: "#111", 5: "#1a4fd6", 30: "#d96a00", 1: "#d01010", 6: "#a020a0", 3: "#139a2c", 8: "#777"}
+# RGB aproximado de los colores ACI usados en rellenos (solo para la vista previa)
+ACI_RGB = {150: "#007fff", 151: "#7fbfff", 140: "#00bfff", 141: "#7fdfff",
+           41: "#ffdf7f", 43: "#ccb266", 51: "#ffff7f", 33: "#cca566",
+           250: "#333333", 251: "#505050", 252: "#696969", 253: "#828282",
+           30: "#ff7f00", 32: "#cc6600", 254: "#bebebe", 8: "#808080", 9: "#c0c0c0"}
+
+
+def triangulate(poly):
+    """Triangulacion por recorte de orejas (poligonos simples)."""
+    pts = list(poly)
+    if signed_area(pts) < 0:
+        pts = pts[::-1]
+    tris = []
+    guard = 0
+    while len(pts) > 3 and guard < 1000:
+        guard += 1
+        n = len(pts)
+        for i in range(n):
+            a, b, c = pts[i - 1], pts[i], pts[(i + 1) % n]
+            if cross2(sub2(b, a), sub2(c, b)) <= 1e-12:
+                continue
+            if any(point_in_poly_strict(p, [a, b, c]) for p in pts if p not in (a, b, c)):
+                continue
+            tris.append((a, b, c))
+            pts.pop(i)
+            break
+        else:
+            break
+    if len(pts) >= 3:
+        for i in range(1, len(pts) - 1):
+            tris.append((pts[0], pts[i], pts[i + 1]))
+    return tris
 
 
 class Drawing:
@@ -437,6 +471,9 @@ class Drawing:
 
     def rect(self, layer, x0, y0, x1, y1):
         self.poly(layer, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], True)
+
+    def fill(self, pts, aci):
+        self.items.append(("fill", "RELLENO", pts, aci))
 
     def circle(self, layer, c, r):
         self.items.append(("circle", layer, c, r))
@@ -496,6 +533,9 @@ class Drawing:
             if it[0] == "line":
                 xs += [it[2][0], it[3][0]]
                 ys += [it[2][1], it[3][1]]
+            elif it[0] == "fill":
+                xs += [p[0] for p in it[2]]
+                ys += [p[1] for p in it[2]]
             elif it[0] == "circle":
                 xs += [it[2][0] - it[3], it[2][0] + it[3]]
                 ys += [it[2][1] - it[3], it[2][1] + it[3]]
@@ -547,6 +587,12 @@ class Drawing:
                 g(0, "LINE"); g(8, layer)
                 g(10, float(p[0])); g(20, float(p[1])); g(30, 0.0)
                 g(11, float(q[0])); g(21, float(q[1])); g(31, 0.0)
+            elif it[0] == "fill":
+                _, layer, pts, aci = it
+                for a, b, c in triangulate(pts):
+                    g(0, "SOLID"); g(8, layer); g(62, aci)
+                    for k, p in enumerate((a, b, c, c)):
+                        g(10 + k, float(p[0])); g(20 + k, float(p[1])); g(30 + k, 0.0)
             elif it[0] == "circle":
                 _, layer, c, r = it
                 g(0, "CIRCLE"); g(8, layer)
@@ -579,9 +625,13 @@ class Drawing:
         for it in self.items:
             layer = it[1]
             col = SVG_COLORS.get(LAYERS[layer][0], "#000")
-            if it[0] == "line":
+            if it[0] == "fill":
+                pts = " ".join("%.3f,%.3f" % T(p) for p in it[2])
+                c = ACI_RGB.get(it[3], "#ccc")
+                o.append('<polygon points="%s" fill="%s" stroke="%s" stroke-width="0.05"/>' % (pts, c, c))
+            elif it[0] == "line":
                 p, q = T(it[2]), T(it[3])
-                sw = 0.35 if layer in ("MADERA", "TROVISEL", "HERRAJES", "MARCO") else 0.2
+                sw = 0.35 if layer in ("MADERA", "TUBO", "TROVISEL", "HERRAJES", "MARCO") else 0.2
                 o.append('<line x1="%.3f" y1="%.3f" x2="%.3f" y2="%.3f" stroke="%s" stroke-width="%.2f"%s/>'
                          % (p[0], p[1], q[0], q[1], col, sw, dash.get(LAYERS[layer][1], "")))
             elif it[0] == "circle":
@@ -608,100 +658,128 @@ T_TROV = 0.6     # espesor del trovisel (6 mm)
 IN = 2.54
 
 VERSIONES = {
-    "V1": dict(nombre='VERSION 1 - POLIN DE 1" x 1 1/2"', w=1.0 * IN, d=1.5 * IN,
-               seccion='1" x 1 1/2" (2.54 x 3.81 cm)', pie=70.0, zt=45.0,
-               perno='1/4"', perno_r=0.3175, cabeza_r=0.95,
-               tornillo='#8 x 2" (5 cm)', tornillo_x='#8 x 1 1/2" (3.8 cm)'),
-    "V2": dict(nombre='VERSION 2 - POLIN DE 2" x 3"', w=2.0 * IN, d=3.0 * IN,
-               seccion='2" x 3" (5.08 x 7.62 cm)', pie=80.0, zt=50.0,
-               perno='3/8"', perno_r=0.476, cabeza_r=1.4,
-               tornillo='#10 x 3 1/2" (9 cm)', tornillo_x='#10 x 3" (7.6 cm)'),
+    "V1": dict(nombre='VERSION 1 - MADERA (POLIN DE 1" x 1 1/2")', material="madera",
+               w=1.0 * IN, d=1.5 * IN, seccion='polin 1" x 1 1/2" (2.54 x 3.81 cm)',
+               pie=60.0, zt=57.0, perno='1/4"', perno_r=0.3175, cabeza_r=0.95,
+               tornillo='#8 x 2" (5 cm)', tramo=244.0),
+    "V2": dict(nombre='VERSION 2 - TUBULAR NEGRO (PTR 1" x 1 1/2")', material="tubo",
+               w=1.0 * IN, d=1.5 * IN, seccion='PTR 1" x 1 1/2" cal. 16 negro',
+               pie=60.0, zt=57.0, perno='1/4"', perno_r=0.3175, cabeza_r=0.95,
+               tornillo='-', tramo=610.0, pared=0.15),
 }
+
+PALETAS = {  # color ACI de relleno segun la orientacion de la cara (x, y, z)
+    "trovisel": (140, 150, 151),
+    "madera": (43, 41, 51),
+    "tubo": (251, 250, 252),
+    "herraje": (32, 30, 30),
+}
+MATERIAL_CAPA = {"TROVISEL": "trovisel", "MADERA": "madera", "TUBO": "tubo", "HERRAJES": "herraje"}
+
+
+def tube_walls(b, axis, t):
+    """Divide un prisma rectangular en las 4 paredes de un tubo (extremos abiertos)."""
+    lo = [b[0], b[2], b[4]]
+    hi = [b[1], b[3], b[5]]
+    a = "xyz".index(axis)
+    i, j = [k for k in range(3) if k != a]
+    walls = []
+    for lo_i, hi_i, lo_j, hi_j in ((lo[i], lo[i] + t, lo[j], hi[j]),
+                                   (hi[i] - t, hi[i], lo[j], hi[j]),
+                                   (lo[i] + t, hi[i] - t, lo[j], lo[j] + t),
+                                   (lo[i] + t, hi[i] - t, hi[j] - t, hi[j])):
+        l2, h2 = list(lo), list(hi)
+        l2[i], h2[i], l2[j], h2[j] = lo_i, hi_i, lo_j, hi_j
+        walls.append((l2[0], h2[0], l2[1], h2[1], l2[2], h2[2]))
+    return walls
 
 
 def build_model(P):
     """Devuelve lista de (nombre, capa, spec) y datos utiles."""
     w, d = P["w"], P["d"]
     tb = T_TROV
-    y0, y1 = tb, tb + d            # bastidor
-    yx0, yx1 = y1, y1 + w          # cruz trasera (pieza acostada)
-    wx = d                         # ancho de la pieza de la cruz
+    tubo = P["material"] == "tubo"
+    capa = "TUBO" if tubo else "MADERA"
+    tw = P.get("pared", 0.15)
+    y0, y1 = tb, tb + d
     yc = tb + d / 2
-    Lf = P["pie"]
-    zt = P["zt"]
-    cx1, cx2 = ANCHO / 3, 2 * ANCHO / 3
+    Lf, zt = P["pie"], P["zt"]
     zr = Z_INF + ALTO / 2
-    zc1, zc2 = Z_INF + ALTO / 3, Z_INF + 2 * ALTO / 3
+    xc = ANCHO / 2
     M = []
+
+    def member(name, b, axis):
+        if tubo:
+            for k, bb in enumerate(tube_walls(b, axis, tw)):
+                M.append(("%s#%d" % (name, k), capa, box(*bb)))
+        else:
+            M.append((name, capa, box(*b)))
+
     M.append(("trovisel", "TROVISEL", box(0, ANCHO, 0, tb, Z_INF, Z_SUP)))
-    # patas laterales (forman los costados del bastidor)
-    M.append(("pata_izq", "MADERA", box(0, w, y0, y1, 0, Z_SUP)))
-    M.append(("pata_der", "MADERA", box(ANCHO - w, ANCHO, y0, y1, 0, Z_SUP)))
-    # travesanos superior e inferior
-    M.append(("trav_sup", "MADERA", box(w, ANCHO - w, y0, y1, Z_SUP - w, Z_SUP)))
-    M.append(("trav_inf", "MADERA", box(w, ANCHO - w, y0, y1, Z_INF, Z_INF + w)))
-    # montantes
-    for i, c in enumerate((cx1, cx2)):
-        M.append(("montante%d" % (i + 1), "MADERA", box(c - w / 2, c + w / 2, y0, y1, Z_INF + w, Z_SUP - w)))
-    # travesanos intermedios (alternados para atornillar de frente)
-    M.append(("trav_lat_izq", "MADERA", box(w, cx1 - w / 2, y0, y1, zr - w / 2, zr + w / 2)))
-    M.append(("trav_lat_der", "MADERA", box(cx2 + w / 2, ANCHO - w, y0, y1, zr - w / 2, zr + w / 2)))
-    for i, zc in enumerate((zc1, zc2)):
-        M.append(("trav_cen%d" % (i + 1), "MADERA", box(cx1 + w / 2, cx2 - w / 2, y0, y1, zc - w / 2, zc + w / 2)))
-    # cruz trasera: X1 continua (atras), X2 en dos tramos (media madera)
-    a1, b1 = (0.0, Z_SUP), (ANCHO, Z_INF)
-    a2, b2 = (0.0, Z_INF), (ANCHO, Z_SUP)
-    x1poly = clip_rect(strip_poly(a1, b1, wx), 0, ANCHO, Z_INF, Z_SUP)
-    x2full = clip_rect(strip_poly(a2, b2, wx), 0, ANCHO, Z_INF, Z_SUP)
-    M.append(("cruz1", "MADERA", ("pxz", x1poly, yx0, yx1)))
-    dx, dz = b1[0] - a1[0], b1[1] - a1[1]
-    L = math.hypot(dx, dz)
-    na, nb = -dz / L, dx / L
-    nc = -(na * a1[0] + nb * a1[1])
-    for k, sg in enumerate((1, -1)):
-        piece = clean_poly(clip_halfplane(x2full, sg * na, sg * nb, sg * nc - wx / 2))
-        M.append(("cruz2%s" % "ab"[k], "MADERA", ("pxz", piece, yx0, yx1)))
-    # pies abatibles, tacos y tornapuntas (a los lados, cara exterior de la pata)
-    r, rh = P["perno_r"], P["cabeza_r"]
-    P1 = (yc + Lf / 2 - 6, d / 2)
+    # patas laterales = largueros del bastidor, del piso a 210
+    member("pata_izq", (0, w, y0, y1, 0, Z_SUP), "z")
+    member("pata_der", (ANCHO - w, ANCHO, y0, y1, 0, Z_SUP), "z")
+    member("trav_sup", (w, ANCHO - w, y0, y1, Z_SUP - w, Z_SUP), "x")
+    member("trav_inf", (w, ANCHO - w, y0, y1, Z_INF, Z_INF + w), "x")
+    # cruz de soporte: travesano medio + montante central
+    zr0, zr1 = zr - w / 2, zr + w / 2
+    xs0, xs1 = xc - w / 2, xc + w / 2
+    if tubo:
+        member("trav_med", (w, ANCHO - w, y0, y1, zr0, zr1), "x")
+        member("montante_inf", (xs0, xs1, y0, y1, Z_INF + w, zr0), "z")
+        member("montante_sup", (xs0, xs1, y0, y1, zr1, Z_SUP - w), "z")
+    else:
+        # media madera: travesano continuo al frente, montante continuo atras
+        M += [("trav_med", capa, box(w, ANCHO - w, y0, yc, zr0, zr1)),
+              ("trav_med_b1", capa, box(w, xs0, yc, y1, zr0, zr1)),
+              ("trav_med_b2", capa, box(xs1, ANCHO - w, yc, y1, zr0, zr1)),
+              ("montante", capa, box(xs0, xs1, yc, y1, Z_INF + w, Z_SUP - w)),
+              ("montante_f1", capa, box(xs0, xs1, y0, yc, Z_INF + w, zr0)),
+              ("montante_f2", capa, box(xs0, xs1, y0, yc, zr1, Z_SUP - w))]
+    # pie hacia atras + taco + tornapunta, del lado interior de cada pata
+    P1 = (y0 + Lf - 6, d / 2)
     P2 = (yc, zt)
-    ext = d * 0.75
+    ext = d * 0.9
     u = sub2(P1, P2)
     ul = math.hypot(*u)
     u = (u[0] / ul, u[1] / ul)
     e1 = (P2[0] - u[0] * ext, P2[1] - u[1] * ext)
     e2 = (P1[0] + u[0] * ext, P1[1] + u[1] * ext)
-    brace = clip_rect(strip_poly(e1, e2, d, ext=0), yc - Lf / 2, yc + Lf / 2, 0, 300)
+    brace = clip_rect(strip_poly(e1, e2, d, ext=0), -30, y0 + Lf, 0, 300)
+    nrm = (-u[1], u[0])
+    def brace_band(sg):     # franja de pared del tubo a lo largo de un canto
+        c = -(nrm[0] * P2[0] + nrm[1] * P2[1])
+        return clean_poly(clip_halfplane(brace, sg * nrm[0], sg * nrm[1], sg * c - (d / 2 - tw)))
     bolts = []
-    for side, (xl, sg) in (("izq", (0.0, -1)), ("der", (ANCHO, 1))):
-        def X(a):   # distancia hacia afuera desde la cara exterior de la pata
+    r, rh = P["perno_r"], P["cabeza_r"]
+    for side, xl, sg in (("izq", 0.0, 1), ("der", ANCHO, -1)):
+        def X(a):
             return xl + sg * a
         def rng(a, b):
             return (min(X(a), X(b)), max(X(a), X(b)))
-        fx = rng(0, w)
-        bx = rng(w, 2 * w)
-        M.append(("pie_" + side, "MADERA", box(fx[0], fx[1], yc - Lf / 2, yc + Lf / 2, 0, d)))
-        M.append(("taco_" + side, "MADERA", box(fx[0], fx[1], y0, y1, zt - 5, zt + 5)))
-        M.append(("tornapunta_" + side, "MADERA", ("pyz", brace, bx[0], bx[1])))
-        # pernos: (centro y,z), desde (afuera) hasta (adentro)
-        for nm, (py, pz), outer in (("pivote", (yc, d / 2), w),
-                                    ("tp_sup", P2, 2 * w),
-                                    ("tp_inf", P1, 2 * w)):
-            inner = -w if nm != "tp_inf" else 0.0   # sale por la cara interior
-            c_out, c_in = X(outer), X(inner - 1.2)
-            ca, cb = min(c_out, c_in), max(c_out, c_in)
-            M.append(("perno_%s_%s" % (nm, side), "HERRAJES",
-                      ("cyl", "x", (0, py, pz), r, ca, cb, 16)))
-            h0, h1 = sorted((X(outer), X(outer + 0.5)))
-            M.append(("cabeza_%s_%s" % (nm, side), "HERRAJES",
-                      ("cyl", "x", (0, py, pz), rh, h0, h1, 16)))
-            n0, n1 = sorted((X(inner - 0.2), X(inner - 0.9)))
-            M.append(("tuerca_%s_%s" % (nm, side), "HERRAJES",
-                      ("cyl", "x", (0, py, pz), rh * 0.95, n0, n1, 6)))
+        fx, bx = rng(w, 2 * w), rng(2 * w, 3 * w)
+        member("pie_" + side, (fx[0], fx[1], y0, y0 + Lf, 0, d), "y")
+        member("taco_" + side, (fx[0], fx[1], y0, y1, zt - 4, zt + 4), "y")
+        if tubo:
+            M.append(("tornapunta_%s#0" % side, capa, ("pyz", brace, bx[0], bx[0] + tw)))
+            M.append(("tornapunta_%s#1" % side, capa, ("pyz", brace, bx[1] - tw, bx[1])))
+            M.append(("tornapunta_%s#2" % side, capa, ("pyz", brace_band(1), bx[0] + tw, bx[1] - tw)))
+            M.append(("tornapunta_%s#3" % side, capa, ("pyz", brace_band(-1), bx[0] + tw, bx[1] - tw)))
+        else:
+            M.append(("tornapunta_" + side, capa, ("pyz", brace, bx[0], bx[1])))
+        # pernos: (nombre, centro y-z, cara donde apoya la cabeza, cara donde va la tuerca)
+        for nm, (py, pz), a_head, a_nut in (("pivote", (yc, d / 2), 0.0, 2 * w),
+                                            ("tp_sup", P2, 0.0, 3 * w),
+                                            ("tp_inf", P1, w, 3 * w)):
+            c0, c1 = sorted((X(a_head - 0.5), X(a_nut + 1.2)))
+            M.append(("perno_%s_%s" % (nm, side), "HERRAJES", ("cyl", "x", (0, py, pz), r, c0, c1, 16)))
+            h0, h1 = sorted((X(a_head - 0.5), X(a_head)))
+            M.append(("cabeza_%s_%s" % (nm, side), "HERRAJES", ("cyl", "x", (0, py, pz), rh, h0, h1, 16)))
+            n0, n1 = sorted((X(a_nut + 0.2), X(a_nut + 0.9)))
+            M.append(("tuerca_%s_%s" % (nm, side), "HERRAJES", ("cyl", "x", (0, py, pz), rh * 0.95, n0, n1, 6)))
             bolts.append((side, nm, py, pz))
-    info = dict(w=w, d=d, yc=yc, Lf=Lf, zt=zt, cx1=cx1, cx2=cx2, zr=zr, zc1=zc1, zc2=zc2,
-                y0=y0, y1=y1, yx0=yx0, yx1=yx1, wx=wx, x1poly=x1poly, brace=brace, P1=P1, P2=P2,
-                bolts=bolts)
+    info = dict(w=w, d=d, yc=yc, y0=y0, y1=y1, Lf=Lf, zt=zt, zr=zr, xc=xc,
+                brace=brace, P1=P1, P2=P2, bolts=bolts, tubo=tubo)
     return M, info
 
 
@@ -719,8 +797,35 @@ def solids_from(M, names=None, region=None, offsets=None):
             for pre, v in offsets.items():
                 if name.startswith(pre):
                     polys = translate_polys(polys, v)
-        out.append(Solid(polys, layer, smooth=(spec[0] == "cyl" and spec[6] > 8)))
+        s = Solid(polys, layer, smooth=(spec[0] == "cyl" and spec[6] > 8))
+        s.material = MATERIAL_CAPA[layer]
+        out.append(s)
     return out
+
+
+def fills(solids, view):
+    """Caras visibles con su color, ordenadas de atras hacia adelante (pintor)."""
+    R, U, V = view
+    items = []
+    for s in solids:
+        pal = PALETAS[getattr(s, "material", "madera")]
+        for f in s.faces:
+            if dot(f.n, V) > -1e-6:
+                continue
+            poly = [(dot(p, R), dot(p, U)) for p in f.pts]
+            if abs(signed_area(poly)) < 1e-6:
+                continue
+            depth = sum(dot(p, V) for p in f.pts) / len(f.pts)
+            ax = max(range(3), key=lambda i: abs(f.n[i]))
+            items.append((depth, poly, pal[ax]))
+    items.sort(key=lambda t: -t[0])
+    return [(p, c) for _, p, c in items]
+
+
+def add_view(D, solids, view, T):
+    for poly, col in fills(solids, view):
+        D.fill([T(p) for p in poly], col)
+    D.lines(hidden_line(solids, view), T)
 
 
 def poly_len(poly, a, b):
@@ -731,217 +836,198 @@ def poly_len(poly, a, b):
 
 
 # ------------------------------------------------- pieza a media madera
-def notched_strip(o, e1, e2, e3, L, W, t, uc, phi, notch_top=True):
-    """Pieza recta (largo L, ancho W, grueso t) con caja a media madera
-    para cruzar otra pieza a un angulo phi; la caja queda en la cara w=t
-    (notch_top) o en w=0."""
+def notched_strip(o, e1, e2, e3, L, W, t, uc, notch_top=True):
+    """Pieza recta (largo L, ancho W, grueso t) con caja a media madera de
+    ancho W centrada en uc, en la cara w=t (notch_top) o en w=0."""
     def P(u, v, w):
         if not notch_top:
             w = t - w
         return add(o, add(mul(e1, u), add(mul(e2, v), mul(e3, w))))
-    s, c = math.sin(phi), math.cos(phi)
-    def uu(v, sg):
-        return uc + (v * c + sg * W / 2) / s
-    ua, ub = sorted((uu(-W / 2, -1), uu(-W / 2, 1)))
-    ud, ue = sorted((uu(W / 2, -1), uu(W / 2, 1)))
+    ua, ub = uc - W / 2, uc + W / 2
     h = t / 2
     m, M_ = -W / 2, W / 2
-    polys = [
+    return [
         [P(0, m, 0), P(L, m, 0), P(L, M_, 0), P(0, M_, 0)],
-        [P(0, m, t), P(ua, m, t), P(ud, M_, t), P(0, M_, t)],
-        [P(ub, m, t), P(L, m, t), P(L, M_, t), P(ue, M_, t)],
-        [P(ua, m, h), P(ub, m, h), P(ue, M_, h), P(ud, M_, h)],
-        [P(ua, m, h), P(ud, M_, h), P(ud, M_, t), P(ua, m, t)],
-        [P(ub, m, h), P(ue, M_, h), P(ue, M_, t), P(ub, m, t)],
+        [P(0, m, t), P(ua, m, t), P(ua, M_, t), P(0, M_, t)],
+        [P(ub, m, t), P(L, m, t), P(L, M_, t), P(ub, M_, t)],
+        [P(ua, m, h), P(ub, m, h), P(ub, M_, h), P(ua, M_, h)],
+        [P(ua, m, h), P(ua, M_, h), P(ua, M_, t), P(ua, m, t)],
+        [P(ub, m, h), P(ub, M_, h), P(ub, M_, t), P(ub, m, t)],
         [P(0, m, 0), P(L, m, 0), P(L, m, t), P(ub, m, t), P(ub, m, h), P(ua, m, h), P(ua, m, t), P(0, m, t)],
-        [P(0, M_, 0), P(L, M_, 0), P(L, M_, t), P(ue, M_, t), P(ue, M_, h), P(ud, M_, h), P(ud, M_, t), P(0, M_, t)],
+        [P(0, M_, 0), P(L, M_, 0), P(L, M_, t), P(ub, M_, t), P(ub, M_, h), P(ua, M_, h), P(ua, M_, t), P(0, M_, t)],
         [P(0, m, 0), P(0, M_, 0), P(0, M_, t), P(0, m, t)],
         [P(L, m, 0), P(L, M_, 0), P(L, M_, t), P(L, m, t)],
     ]
-    return polys
+
+
+def solid_mat(polys, layer):
+    s = Solid(polys, layer)
+    s.material = MATERIAL_CAPA[layer]
+    return s
 
 
 # ------------------------------------------------------------- laminas
-def place(segs, view_fn, dx, dy):
-    return [(l, (p[0] + dx, p[1] + dy), (q[0] + dx, q[1] + dy)) for l, p, q in segs]
+def piso(D, x0, x1):
+    D.line("PISO", (x0, 0), (x1, 0))
+    n = int((x1 - x0) / 21)
+    for i in range(n + 1):
+        x = x0 + 3 + i * 21
+        D.line("PISO", (x, 0), (x - 3, -3))
 
 
 def make_sheet(key, P, outdir):
     M, I = build_model(P)
-    w, d, yc, Lf, zt = I["w"], I["d"], I["yc"], I["Lf"], I["zt"]
+    w, d, yc, Lf, zt, y0, y1 = I["w"], I["d"], I["yc"], I["Lf"], I["zt"], I["y0"], I["y1"]
+    tubo = I["tubo"]
     D = Drawing()
     full = solids_from(M)
-
     FRONT = view_basis((0, 1, 0))
     REAR = view_basis((0, -1, 0))
     SIDE = view_basis((-1, 0, 0))
+    estructura = "tubular negro" if tubo else "madera"
 
-    # ---------------- alzado frontal (x, z)
-    OX_F = 0.0
-    D.lines(hidden_line(full, FRONT), lambda p: (p[0] + OX_F, p[1]))
-    D.line("PISO", (OX_F - 25, 0), (OX_F + ANCHO + 25, 0))
-    for i in range(14):
-        x = OX_F - 22 + i * 21
-        D.line("PISO", (x, 0), (x - 3, -3))
-    D.text("TEXTO", (OX_F + ANCHO / 2, 116), 6, "TROVISEL 122 x 244", "center")
-    D.text("TEXTO", (OX_F + ANCHO / 2, 106), 3.5, "(PVC espumado 6 mm, pegado al bastidor)", "center")
-    D.dim((OX_F, Z_SUP), (OX_F + ANCHO, Z_SUP), 10)
-    D.dim((OX_F - 2 * w, 0), (OX_F + ANCHO + 2 * w, 0), -14, fmt="{:.1f}")
-    D.dim((OX_F - 2 * w, 0), (OX_F - 2 * w, Z_INF), 12)
-    D.dim((OX_F, Z_INF), (OX_F, Z_SUP), 12 + 2 * w)
-    D.dim((OX_F + ANCHO + 2 * w, 0), (OX_F + ANCHO + 2 * w, Z_SUP), -12)
-    D.text("TEXTO", (OX_F + ANCHO / 2, 240), 7, "ALZADO FRONTAL", "center")
-    D.text("TEXTO", (OX_F + ANCHO / 2, 232), 3.5, "ESC. 1:20 (al imprimir el plano completo a 1:20)", "center")
+    # ---------------- alzado frontal
+    add_view(D, full, FRONT, lambda p: p)
+    piso(D, -25, ANCHO + 25)
+    D.text("TEXTO", (ANCHO / 2, 152), 6, "TROVISEL 122 x 244", "center")
+    D.text("TEXTO", (ANCHO / 2, 142), 3.5, "(PVC espumado 6 mm, color azul, pegado al bastidor)", "center")
+    D.dim((0, Z_SUP), (ANCHO, Z_SUP), 10)
+    D.dim((0, 0), (0, Z_INF), 12)
+    D.dim((0, Z_INF), (0, Z_SUP), 12)
+    D.dim((ANCHO, 0), (ANCHO, Z_SUP), -12)
+    D.text("TEXTO", (ANCHO / 2, 240), 7, "ALZADO FRONTAL", "center")
+    D.text("TEXTO", (ANCHO / 2, 232), 3.5, "Estructura total 244 x 210 cm", "center")
 
     # ---------------- alzado posterior
     OX_R = 330.0 + ANCHO
-    D.lines(hidden_line(full, REAR), lambda p: (p[0] + OX_R, p[1]))
-    D.line("PISO", (OX_R - ANCHO - 25, 0), (OX_R + 25, 0))
-    for i in range(14):
-        x = OX_R - ANCHO - 22 + i * 21
-        D.line("PISO", (x, 0), (x - 3, -3))
     rx = lambda x: OX_R - x
-    D.dim((rx(0), Z_SUP), (rx(I["cx2"]), Z_SUP), 8, txt="81.3", h=3.2)
-    D.dim((rx(I["cx2"]), Z_SUP), (rx(I["cx1"]), Z_SUP), 8, txt="81.3", h=3.2)
-    D.dim((rx(I["cx1"]), Z_SUP), (rx(ANCHO), Z_SUP), 8, txt="81.3", h=3.2)
-    D.text("TEXTO", (rx(ANCHO / 2), Z_SUP + 15), 3, "(a ejes de montantes)", "center")
-    D.dim((rx(ANCHO), Z_INF), (rx(ANCHO), I["zr"]), -10, txt="61")
-    D.dim((rx(ANCHO), I["zr"]), (rx(ANCHO), Z_SUP), -10, txt="61")
-    D.dim((rx(0), Z_INF), (rx(0), I["zc1"]), 10, txt="40.7")
-    D.dim((rx(0), I["zc1"]), (rx(0), I["zc2"]), 10, txt="40.7")
-    D.dim((rx(0), I["zc2"]), (rx(0), Z_SUP), 10, txt="40.7")
-    D.text("TEXTO", (rx(-24), I["zc1"] - 2), 2.6, "(trav. centrales)", "center", 90)
-    D.text("TEXTO", (rx(ANCHO + 22), I["zr"] - 2), 2.6, "(trav. laterales)", "center", 90)
+    add_view(D, full, REAR, lambda p: (p[0] + OX_R, p[1]))
+    piso(D, rx(ANCHO) - 25, rx(0) + 25)
+    D.dim((rx(ANCHO), Z_SUP), (rx(I["xc"]), Z_SUP), 10)
+    D.dim((rx(I["xc"]), Z_SUP), (rx(0), Z_SUP), 10)
+    D.dim((rx(ANCHO), Z_INF), (rx(ANCHO), I["zr"]), 10)
+    D.dim((rx(ANCHO), I["zr"]), (rx(ANCHO), Z_SUP), 10)
+    D.dim((rx(0), 0), (rx(0), Z_INF), -10)
     D.text("TEXTO", (rx(ANCHO / 2), 240), 7, "ALZADO POSTERIOR", "center")
-    D.text("TEXTO", (rx(ANCHO / 2), 232), 3.5, "Bastidor visto por detras con cruz de soporte", "center")
-    # etiquetas
-    D.leader((rx(ANCHO * 0.25), Z_INF + ALTO * 0.25 + 3), (rx(ANCHO * 0.25) + 20, 60),
-             "CRUZ TRASERA\n" + P["seccion"] + " acostada\nunion a media madera al centro")
-    D.leader((rx(I["cx1"]), Z_INF + 12), (rx(I["cx1"]) - 5, 40), "MONTANTE " + P["seccion"])
-    D.leader((rx(ANCHO - w / 2), 30), (rx(ANCHO) + 25, 60), "PATA LATERAL 210 cm")
+    D.text("TEXTO", (rx(ANCHO / 2), 232), 3.5, "Bastidor visto por detras: perimetro + cruz de soporte", "center")
+    D.leader((rx(ANCHO * 0.6), I["zr"]), (rx(ANCHO * 0.6) + 15, 62),
+             "CRUZ DE SOPORTE\n(travesano medio + montante central)\n" + P["seccion"])
+    D.leader((rx(I["xc"]), Z_INF + 15), (rx(I["xc"]) + 10, 22), "MONTANTE CENTRAL")
+    D.leader((rx(ANCHO - w / 2), 30), (rx(ANCHO) + 30, 72), "PATA LATERAL 210 cm")
+    D.leader((rx(2.5 * w), 25), (rx(-22), 50), "PIE + TORNAPUNTA\n(lado interior)")
 
     # ---------------- alzado lateral
     OX_S = 700.0
-    D.lines(hidden_line(full, SIDE), lambda p: (p[0] + OX_S, p[1]))
-    D.line("PISO", (OX_S - Lf / 2 - 20, 0), (OX_S + Lf / 2 + 30, 0))
-    for i in range(7):
-        x = OX_S - Lf / 2 - 17 + i * 18
-        D.line("PISO", (x, 0), (x - 3, -3))
     sx = lambda y: OX_S + y
-    D.dim((sx(yc - Lf / 2), 0), (sx(yc + Lf / 2), 0), -10)
-    D.dim((sx(0), Z_INF), (sx(0), Z_SUP), 14, txt="122")
-    D.dim((sx(0), 0), (sx(0), Z_INF), 14, txt="88")
-    D.dim((sx(I["yx1"]), 0), (sx(I["yx1"]), Z_SUP), -30, txt="210")
-    D.dim((sx(I["P2"][0]), 0), (sx(I["P2"][0]), zt), -(Lf / 2 + 8), fmt="{:.0f}")
-    D.dim((sx(0), Z_SUP), (sx(I["yx1"]), Z_SUP), 6, fmt="{:.1f}", h=2.6)
-    D.text("TEXTO", (sx(0), 240), 7, "ALZADO LATERAL", "center")
-    D.text("TEXTO", (sx(0), 232), 3.5, "(visto desde la derecha)", "center")
-    D.leader((sx(-T_TROV / 2), 180), (sx(-30), 195), "TROVISEL 6 mm\nPEGADO AL BASTIDOR")
-    D.leader((sx(I["yx1"] - w / 2), 150), (sx(30), 165), "CRUZ TRASERA")
-    D.leader((sx(yc), zt + 3), (sx(-35), 70), "TACO + PERNO\nPIVOTE TORNAPUNTA")
-    D.leader((sx(I["P1"][0] - 3), 10), (sx(40), 40), "TORNAPUNTA\nTRASERA")
-    D.leader((sx(yc - Lf / 2 + 5), d / 2), (sx(-45), 22), "PIE ABATIBLE " + "%.0f" % Lf + " cm")
+    add_view(D, full, SIDE, lambda p: (p[0] + OX_S, p[1]))
+    piso(D, sx(-25), sx(Lf + 30))
+    D.dim((sx(y0), 0), (sx(y0 + Lf), 0), -10)
+    D.dim((sx(-3), 0), (sx(-3), Z_INF), 12)
+    D.dim((sx(-3), Z_INF), (sx(-3), Z_SUP), 12)
+    D.dim((sx(y0 + Lf), 0), (sx(y0 + Lf), Z_SUP), -14)
+    D.dim((sx(yc), 0), (sx(yc), zt), -(Lf - 8), fmt="{:.0f}")
+    D.dim((sx(0), Z_SUP), (sx(y1), Z_SUP), 6, h=2.6)
+    D.text("TEXTO", (sx(Lf / 2 - 10), 240), 7, "ALZADO LATERAL", "center")
+    D.text("TEXTO", (sx(Lf / 2 - 10), 232), 3.5, "(visto desde la derecha)", "center")
+    D.leader((sx(T_TROV / 2), 180), (sx(25), 195), "TROVISEL 6 mm\nPEGADO AL BASTIDOR")
+    D.leader((sx(yc), 130), (sx(25), 140), "PATA " + ("PTR" if tubo else "POLIN"))
+    D.leader((sx(yc), zt), (sx(-38), 75), "PERNO PIVOTE\nTORNAPUNTA")
+    D.leader((sx(yc), d / 2), (sx(-38), 25), "PERNO PIVOTE PIE")
+    D.leader((sx(I["P1"][0] - 12), 18), (sx(Lf - 5), 45), "TORNAPUNTA")
+    D.leader((sx(Lf - 15), d / 2), (sx(Lf - 5), 18), "PIE %.0f cm" % Lf)
 
     # ---------------- detalles isometricos
-    details = []
-    ISO_FL = view_basis((1, 1, -1))      # desde frente-izquierda-arriba
     ISO_BL = view_basis((1, -1, -1))     # desde atras-izquierda-arriba
+    ISO_FRI = view_basis((-1, 1, -1))    # desde frente-derecha-arriba (cara interior pata izq.)
+    details = []
 
-    # D1 esquina superior: pata + travesano superior + trovisel + cruz
-    reg = (-1, 32, -1, 30, 176, 211)
-    off = {"trovisel": (0, -10, 0), "cruz": (0, 10, 0), "trav_sup": (6, 0, 0)}
-    s1 = solids_from(M, ["trovisel", "pata_izq", "trav_sup", "cruz1"], reg, off)
-    seg1 = hidden_line(s1, ISO_BL)
-    lab1 = []
-    pr = lambda p: project(p, ISO_BL)
-    # pegamento sobre la cara trasera del trovisel
-    glue = []
-    for z in (Z_SUP - w / 2,):
-        glue.append(((1.2, -10 + T_TROV, z), (31, -10 + T_TROV, z)))
-    glue.append(((w / 2, -10 + T_TROV, Z_SUP - 1.2), (w / 2, -10 + T_TROV, 177)))
-    ejes1 = [((-3, I["y0"] + d * 0.3, Z_SUP - w / 2), (6 + w + 5, I["y0"] + d * 0.3, Z_SUP - w / 2)),
-             ((-3, I["y0"] + d * 0.7, Z_SUP - w / 2), (6 + w + 5, I["y0"] + d * 0.7, Z_SUP - w / 2)),
-             ((3, -14, 200), (3, I["yx1"] + 14, 200)),
-             ((14, -14, Z_SUP - w / 2), (14, -10 + T_TROV + 0.01, Z_SUP - w / 2))]
-    lab1 = [((25, -10 + T_TROV, 190), (30, 25), "TROVISEL: adhesivo de montaje\n(poliuretano) en todo el contacto"),
-            ((w / 2, I["y1"], 185), (-28, -10), "PATA " + P["seccion"]),
-            ((25, I["y0"], Z_SUP), (-20, 26), "TRAVESANO SUPERIOR\na tope entre patas"),
-            ((5, I["yx1"] + 10, 196), (-30, 28), "CRUZ TRASERA (separada)\natornillada a pata y travesano"),
-            ((-3, I["y0"] + d * 0.3, Z_SUP - w / 2), (-34, 8), "2 tornillos " + P["tornillo"] + "\n+ pegamento blanco"),
-            ((14, -14, Z_SUP - w / 2), (30, 22), "tornillo #8x1\" c/rondana\ncada 30 cm (perimetro)")]
-    details.append(("DETALLE 1 - ESQUINA SUPERIOR (vista posterior, despiezada)",
-                    seg1, ISO_BL, glue, ejes1, lab1))
+    # D1 esquina superior
+    reg = (-1, 32, -1, 12, 176, 211)
+    s1 = solids_from(M, ["trovisel", "pata_izq", "trav_sup"], reg,
+                     {"trovisel": (0, -10, 0), "trav_sup": (6, 0, 0)})
+    yb = -10 + T_TROV
+    glue = [((1.2, yb, Z_SUP - w / 2), (31, yb, Z_SUP - w / 2)),
+            ((w / 2, yb, Z_SUP - 1.2), (w / 2, yb, 177))]
+    ejes = [((14, -14, Z_SUP - w / 2), (14, yb + 0.01, Z_SUP - w / 2))]
+    if tubo:
+        lab = [((w + 3, y0, Z_SUP - w), (-30, 26), "SOLDADURA a tope en\ntodo el contorno (MIG)"),
+               ((w / 2, y0, Z_SUP), (-45, -22), "TAPON PLASTICO\nen extremo abierto")]
+        fij = "pija autoperforante c/rondana\ncada 30 cm (perimetro)"
+    else:
+        ejes += [((-3, y0 + d * f, Z_SUP - w / 2), (6 + w + 5, y0 + d * f, Z_SUP - w / 2)) for f in (0.3, 0.7)]
+        lab = [((-3, y0 + d * 0.3, Z_SUP - w / 2), (-34, 8), "2 tornillos " + P["tornillo"] + "\n+ pegamento blanco"),
+               ((25, y0, Z_SUP), (-20, 26), "TRAVESANO SUPERIOR\na tope entre patas")]
+        fij = "tornillo #8x1\" c/rondana\ncada 30 cm (perimetro)"
+    lab += [((25, yb, 190), (30, 25), "TROVISEL: adhesivo poliuretano\n(o cinta doble cara VHB) en todo el contacto"),
+            ((w / 2, y1, 185), (-28, -10), "PATA " + P["seccion"]),
+            ((14, -14, Z_SUP - w / 2), (30, 22), fij)]
+    details.append(("DETALLE 1 - ESQUINA SUPERIOR (vista posterior, despiezada)", s1, ISO_BL, glue, ejes, lab))
 
-    # D2 union en T montante / travesano central
-    cx1, zc1 = I["cx1"], I["zc1"]
-    reg = (cx1 - 14, cx1 + 18, I["y0"], I["y1"], zc1 - 16, zc1 + 16)
-    s2 = solids_from(M, ["montante1", "trav_cen1"], reg, {"trav_cen1": (7, 0, 0)})
-    seg2 = hidden_line(s2, ISO_FL)
-    ejes2 = [((cx1 - w / 2 - 5, I["y0"] + d * f, zc1), (cx1 + w / 2 + 7 + 6, I["y0"] + d * f, zc1)) for f in (0.3, 0.7)]
-    lab2 = [((cx1, I["y0"], zc1 + 12), (-30, 12), "MONTANTE"),
-            ((cx1 + 15, I["y0"], zc1 + w / 2), (8, 22), "TRAVESANO INTERMEDIO\n(separado para ver la union)"),
-            ((cx1 - w / 2 - 5, I["y0"] + d * 0.3, zc1), (-34, -18),
-             "2 tornillos " + P["tornillo"] + "\ndesde el costado libre\ndel montante + pegamento")]
-    details.append(("DETALLE 2 - UNION EN T MONTANTE / TRAVESANO", seg2, ISO_FL, [], ejes2, lab2))
+    # D2 centro de la cruz
+    xc, zr = I["xc"], I["zr"]
+    L2 = 36.0
+    capa = "TUBO" if tubo else "MADERA"
+    if tubo:
+        reg = (xc - L2 / 2, xc + L2 / 2, -1, 10, zr - L2 / 2, zr + L2 / 2)
+        s2 = solids_from(M, ["trav_med", "montante"], reg,
+                         {"montante_sup": (0, 0, 6), "montante_inf": (0, 0, -6)})
+        ejes = []
+        lab = [((xc + 14, y1, zr), (20, 22), "TRAVESANO MEDIO CONTINUO"),
+               ((xc, y1, zr + 14), (-34, 16), "MONTANTE EN 2 TRAMOS\nsoldado arriba y abajo\ndel travesano"),
+               ((xc + w / 2, y1, zr - w / 2), (18, -24), "cordon de soldadura\nen las 4 caras")]
+    else:
+        s2 = [solid_mat(notched_strip((xc - L2 / 2, y0, zr), X_, Z_, Y_, L2, w, d, L2 / 2, True), capa),
+              solid_mat(notched_strip((xc, y0 + 22, zr - L2 / 2), Z_, X_, Y_, L2, w, d, L2 / 2, False), capa)]
+        ejes = [((xc, y0 - 3, zr), (xc, y0 + 22 + d + 4, zr))]
+        lab = [((xc + 14, y1, zr), (20, -22), "TRAVESANO MEDIO\n(caja atras, 1/2 del grueso)"),
+               ((xc, y0 + 22 + d, zr + 14), (-34, 14), "MONTANTE CENTRAL\n(caja al frente, 1/2 del grueso)"),
+               ((xc, y0 + 22 + d + 4, zr), (-30, -30), "pegamento + 2 tornillos\n#8 x 1 1/4\" en el cruce")]
+    details.append(("DETALLE 2 - CENTRO DE LA CRUZ " + ("(soldado)" if tubo else "A MEDIA MADERA"),
+                    s2, ISO_BL, [], ejes, lab))
 
-    # D3 cruce a media madera de la cruz trasera (pieza 1 separada hacia atras)
-    phi = 2 * math.atan2(ALTO, ANCHO)
-    a1 = math.atan2(-ALTO, ANCHO)
-    e1 = (math.cos(a1), 0, math.sin(a1))
-    e2 = (-math.sin(a1), 0, math.cos(a1))
-    e3 = (0, 1, 0)
-    Lp, Wp, tp = 44.0, I["wx"], w
-    cen = (ANCHO / 2, I["yx0"], Z_INF + ALTO / 2)
-    o1 = sub(add(cen, (0, 8.0, 22.0)), mul(e1, Lp / 2))
-    # cruz 1: caja hacia el frente (w=0) ; cruz 2: caja hacia atras (w=t)
-    pA = notched_strip(o1, e1, e2, e3, Lp, Wp, tp, Lp / 2, phi, notch_top=False)
-    a2 = math.atan2(ALTO, ANCHO)
-    f1 = (math.cos(a2), 0, math.sin(a2))
-    f2 = (-math.sin(a2), 0, math.cos(a2))
-    o2 = sub(cen, mul(f1, Lp / 2))
-    pB = notched_strip(o2, f1, f2, e3, Lp, Wp, tp, Lp / 2, -phi, notch_top=True)
-    s3 = [Solid(pA), Solid(pB)]
-    seg3 = hidden_line(s3, ISO_BL)
-    ejes3 = [(add(cen, (0, -2, -5.5)), add(cen, (0, 8 + tp + 3, 22 + 3)))]
-    lab3 = [(add(o1, mul(e1, 5)), (-25, 20), "CRUZ - PIEZA CONTINUA\n(caja hacia el frente)"),
-            (add(o2, add(mul(f1, 6), (0, tp, 0))), (-34, -14), "CRUZ - PIEZA EN TRAMOS\no con caja hacia atras"),
-            (add(cen, (0, tp, 0)), (30, -30),
-             "caja a media madera (1/2 del grueso)\npegamento + 2 tornillos " + P["tornillo_x"])]
-    details.append(("DETALLE 3 - CRUCE DE LA CRUZ A MEDIA MADERA", seg3, ISO_BL, [], ejes3, lab3))
+    # D3 travesano medio contra la pata
+    reg = (-1, 26, -1, 10, zr - 12, zr + 12)
+    s3 = solids_from(M, ["pata_izq", "trav_med"], reg, {"trav_med": (6, 0, 0)})
+    if tubo:
+        ejes = []
+        lab = [((w + 6, y1, zr), (20, 22), "SOLDADURA a tope\nen todo el contorno")]
+    else:
+        ejes = [((-4, y0 + d * f, zr), (w + 6 + 6, y0 + d * f, zr)) for f in (0.3, 0.7)]
+        lab = [((-4, y0 + d * 0.3, zr), (-30, -16), "2 tornillos " + P["tornillo"] + "\ndesde el costado de la pata\n+ pegamento blanco")]
+    lab += [((w / 2, y1, zr + 10), (30, 30), "PATA"),
+            ((20, y1, zr + w / 2), (14, 20), "TRAVESANO MEDIO\n(separado para ver la union)")]
+    details.append(("DETALLE 3 - TRAVESANO MEDIO CON PATA", s3, ISO_BL, [], ejes, lab))
 
-    # D4 pie abatible + tornapunta (lado izquierdo, piezas separadas hacia afuera)
-    reg = (-2 * w - 3, w + 3, -50, 60, 0, zt + 14)
-    off = {"pie_izq": (-6, 0, 0), "taco_izq": (-6, 0, 0), "tornapunta_izq": (-12, 0, 0),
-           "perno": (-22, 0, 0), "cabeza": (-22, 0, 0), "tuerca": (6, 0, 0)}
-    names = ["pata_izq", "pie_izq", "taco_izq", "tornapunta_izq", "perno_pivote_izq", "perno_tp_sup_izq",
-             "perno_tp_inf_izq", "cabeza_pivote_izq", "cabeza_tp_sup_izq", "cabeza_tp_inf_izq",
-             "tuerca_pivote_izq", "tuerca_tp_sup_izq", "tuerca_tp_inf_izq"]
+    # D4 pie + tornapunta (pata izquierda, cara interior, piezas separadas)
+    reg = (-2, 3 * w + 3, -20, Lf + 5, 0, zt + 12)
+    names = ["pata_izq", "pie_izq", "taco_izq", "tornapunta_izq", "perno_", "cabeza_", "tuerca_"]
+    off = {"pie_izq": (6, 0, 0), "taco_izq": (6, 0, 0), "tornapunta_izq": (12, 0, 0),
+           "perno": (-14, 0, 0), "cabeza": (-14, 0, 0), "tuerca": (20, 0, 0)}
     s4 = solids_from(M, names, reg, off)
-    seg4 = hidden_line(s4, ISO_FL)
-    ejes4 = []
-    for side, nm, py, pz in I["bolts"]:
-        if side == "izq":
-            ejes4.append(((-2 * w - 30, py, pz), (w + 8, py, pz)))
+    s4 = [s for s in s4 if s.layer != "HERRAJES" or
+          max(p[0] for f in s.faces for p in f.pts) < ANCHO / 2]
+    ejes = [((-20, py, pz), (3 * w + 24, py, pz)) for side, nm, py, pz in I["bolts"] if side == "izq"]
     P1, P2 = I["P1"], I["P2"]
-    lab4 = [((w / 2, I["y0"], zt + 12), (14, 14), "PATA LATERAL"),
-            ((-6 - w, yc - Lf / 2 + 6, d), (-12, -20), "PIE ABATIBLE %.0f cm (gira 90 grados\nsobre el perno para transporte)" % Lf),
-            ((-6 - w, I["y0"], zt + 5), (-26, 16), "TACO SEPARADOR\n10 cm, pegado y\natornillado a la pata"),
-            ((-12 - 2 * w, (P1[0] + P2[0]) / 2, (P1[1] + P2[1]) / 2), (-50, 6), "TORNAPUNTA TRASERA\n(trabaja el pie a 90 grados)"),
-            ((-2 * w - 22 - 0.5, yc, d / 2), (-24, -14),
-             "PERNO COCHE " + P["perno"] + " c/ rondanas\ny tuerca mariposa (3 por lado)")]
-    details.append(("DETALLE 4 - PIE ABATIBLE CON TORNAPUNTA (despiezado)", seg4, ISO_FL, [], ejes4, lab4))
+    lab = [((w / 2, y0, zt + 10), (-24, 10), "PATA LATERAL"),
+           ((6 + 2 * w, y0 + Lf - 10, d), (10, -16), "PIE %.0f cm hacia atras\n(gira sobre el perno para guardar)" % Lf),
+           ((6 + 2 * w, y0, zt + 4), (-34, 18), "TACO SEPARADOR 8 cm\n" + ("soldado a la pata" if tubo else "pegado y atornillado")),
+           ((12 + 3 * w, (P1[0] + P2[0]) / 2, (P1[1] + P2[1]) / 2), (22, 12), "TORNAPUNTA"),
+           ((-14.5, yc, d / 2), (-24, -14), "PERNO " + P["perno"] + " c/ rondanas y\ntuerca mariposa (3 por lado)")]
+    details.append(("DETALLE 4 - PIE Y TORNAPUNTA (despiezado)", s4, ISO_FRI, [], ejes, lab))
 
-    # colocar los detalles en una fila
     X0, Ytop = -20.0, -55.0
     slot = 280.0
-    for k, (title, segs, view, glue, ejes, labs) in enumerate(details):
+    for k, (title, sol, view, glue, ejes, labs) in enumerate(details):
+        segs = hidden_line(sol, view)
         xs = [c for _, p, q in segs for c in (p[0], q[0])]
         ys = [c for _, p, q in segs for c in (p[1], q[1])]
         bw, bh = max(xs) - min(xs), max(ys) - min(ys)
         sc = min(150.0 / bw, 150.0 / bh, 6.0)
         ox = X0 + k * slot + (slot - bw * sc) / 2 - min(xs) * sc
-        oy = Ytop - 45 - (max(ys) * sc) + (150 - bh * sc) / 2 * 0
+        oy = Ytop - 45 - max(ys) * sc
         T = lambda p, sc=sc, ox=ox, oy=oy: (p[0] * sc + ox, p[1] * sc + oy)
+        for poly, col in fills(sol, view):
+            D.fill([T(p) for p in poly], col)
         D.lines(segs, T)
         for a, b in glue:
             D.line("PEGAMENTO", T(project(a, view)), T(project(b, view)))
@@ -953,55 +1039,73 @@ def make_sheet(key, P, outdir):
         cxm = X0 + k * slot + slot / 2
         D.text("TEXTO", (cxm, Ytop - 2), 4.2, title, "center")
         D.text("TEXTO", (cxm, Ytop - 9), 3, "ISOMETRICO - SIN ESCALA", "center")
-        D.line("TEXTO", (cxm - 105, Ytop - 4.5), (cxm + 105, Ytop - 4.5))
+        D.line("TEXTO", (cxm - 110, Ytop - 4.5), (cxm + 110, Ytop - 4.5))
 
     # ---------------- lista de cortes y notas
-    NX, NY = 820.0, 222.0
+    NX, NY = 830.0, 222.0
     rows = lista_cortes(P, I)
-    D.text("TEXTO", (NX, NY), 5, "LISTA DE CORTES  -  madera " + P["seccion"], "left")
+    D.text("TEXTO", (NX, NY), 5, "LISTA DE CORTES - " + P["seccion"])
     D.line("TEXTO", (NX, NY - 3), (NX + 270, NY - 3))
     y = NY - 9
-    D.text("TEXTO", (NX, y), 3.2, "PIEZA")
-    D.text("TEXTO", (NX + 150, y), 3.2, "CANT.")
-    D.text("TEXTO", (NX + 180, y), 3.2, "LARGO (cm)")
-    D.text("TEXTO", (NX + 225, y), 3.2, "CORTE")
+    for x, t in ((0, "PIEZA"), (150, "CANT."), (180, "LARGO (cm)"), (220, "NOTA")):
+        D.text("TEXTO", (NX + x, y), 3.2, t)
     y -= 3
     D.line("TEXTO", (NX, y), (NX + 270, y))
     total = 0.0
-    for nm, n, L, corte in rows:
+    for nm, n, L, nota in rows:
         y -= 6
         D.text("TEXTO", (NX, y), 3.2, nm)
         D.text("TEXTO", (NX + 155, y), 3.2, str(n))
         D.text("TEXTO", (NX + 185, y), 3.2, "%.1f" % L)
-        D.text("TEXTO", (NX + 225, y), 3.2, corte)
+        D.text("TEXTO", (NX + 220, y), 3.2, nota)
         total += n * L
     y -= 4
     D.line("TEXTO", (NX, y), (NX + 270, y))
     y -= 6
-    D.text("TEXTO", (NX, y), 3.2, "TOTAL LINEAL APROX.: %.1f m  (comprar %d tramos de 2.44 m o %d de 3.66 m incl. desperdicio)"
-           % (total / 100, math.ceil(total * 1.12 / 244), math.ceil(total * 1.12 / 366)))
+    D.text("TEXTO", (NX, y), 3.2, "TOTAL LINEAL APROX.: %.1f m  (%d tramos de %.2f m, con 10%% de desperdicio)"
+           % (total / 100, math.ceil(total * 1.1 / P["tramo"]), P["tramo"] / 100))
     y -= 14
+    if tubo:
+        uniones = [
+            "3. Bastidor soldado (MIG o electrodo 6013) a tope en todo el contorno; esmerilar y",
+            "   pintar con primario + esmalte NEGRO. Tapones plasticos en extremos abiertos.",
+            "4. Cruz de soporte: travesano medio continuo; montante central en 2 tramos soldados",
+            "   arriba y abajo del travesano.",
+            "5. Trovisel: adhesivo de poliuretano (o cinta VHB) sobre todo el bastidor + pija",
+            "   autoperforante con rondana cada 30 cm en el perimetro.",
+        ]
+    else:
+        uniones = [
+            "3. Bastidor: uniones a tope con pegamento blanco + 2 tornillos " + P["tornillo"] + " con",
+            "   barreno guia. Sellar/pintar la madera antes de pegar el trovisel.",
+            "4. Cruz de soporte: travesano medio y montante central unidos a media madera al centro",
+            "   (caja de la mitad del grueso en cada pieza) con pegamento + 2 tornillos.",
+            "5. Trovisel: adhesivo de montaje/poliuretano sobre todo el bastidor + tornillo #8 x 1\"",
+            "   con rondana cada 30 cm en el perimetro (sin apretar de mas).",
+        ]
     notas = [
         "NOTAS",
-        "1. Cotas en centimetros. Medidas de madera nominales " + P["seccion"] + "; verificar la medida real",
-        "   del polin y ajustar los largos (el bastidor siempre mide 244 x 122 al exterior).",
-        "2. Trovisel (PVC espumado) de 122 x 244, 6 mm. Va PEGADO al frente del bastidor con adhesivo",
-        "   de montaje / poliuretano en todos los miembros, mas tornillo #8 x 1\" con rondana cada 30 cm",
-        "   en el perimetro (sin apretar de mas para no hundir el PVC).",
-        "3. Bastidor: uniones a tope con pegamento blanco + 2 tornillos " + P["tornillo"] + " con barreno guia.",
-        "   Los travesanos intermedios estan alternados (alturas distintas) para poder atornillar de frente.",
-        "4. Cruz trasera: 2 diagonales acostadas detras del bastidor, unidas a media madera en el centro y",
-        "   atornilladas (" + P["tornillo_x"] + ") a cada pata, travesano y montante que cruzan. Cortar las puntas",
-        "   presentando la pieza sobre el bastidor armado.",
-        "5. Patas en los costados = largueros laterales del bastidor, del piso a 210 cm.",
-        "6. Pie abatible por lado: gira sobre un perno coche " + P["perno"] + " con tuerca mariposa (pivote). La tornapunta",
-        "   trasera gira sobre el perno del taco y se fija al pie con otro perno: asi el pie queda a 90 grados.",
-        "   Para transporte: quitar el perno inferior de la tornapunta, subirla y girar el pie.",
-        "7. En exterior: lastrar o anclar los pies (costales de arena / taquetes) por efecto del viento.",
-        "8. Sellar / pintar la madera antes de pegar el trovisel.",
+        "1. Cotas en cm. Estructura total 244 x 210. Trovisel 122 x 244 de 88 a 210 cm del piso.",
+        "2. Seccion: " + P["seccion"] + ". Verificar medida real y ajustar largos.",
+    ] + uniones + [
+        "6. Patas en los costados = largueros del bastidor, del piso a 210 cm.",
+        "7. Pie por el lado interior de cada pata, hacia atras. Gira sobre perno " + P["perno"] + " (pivote);",
+        "   la tornapunta va del taco al extremo del pie con pernos y tuerca mariposa.",
+        "   Para guardar: quitar el perno inferior de la tornapunta y girar pie y tornapunta.",
+        "8. El pie solo sale hacia atras: lastrar (costal de arena) o anclar al piso,",
+        "   sobre todo en exterior por el viento.",
     ]
     for i, t in enumerate(notas):
         D.text("TEXTO", (NX, y - i * 5.6), 4 if i == 0 else 3.0, t)
+    y -= len(notas) * 5.6 + 8
+    D.text("TEXTO", (NX, y), 4, "COLORES")
+    for i, (col, t) in enumerate(((150, "Trovisel (azul)"),
+                                  (PALETAS["tubo" if tubo else "madera"][1], "Estructura (" + estructura + ")"),
+                                  (30, "Pernos / herrajes"))):
+        yy = y - 8 - i * 7
+        D.fill([(NX, yy), (NX + 10, yy), (NX + 10, yy + 4.5), (NX, yy + 4.5)], col)
+        D.rect("TEXTO", NX, yy, NX + 10, yy + 4.5)
+        D.text("TEXTO", (NX + 14, yy + 0.8), 3.2, t)
 
     # ---------------- marco y cuadro de titulo
     bx0, by0, bx1, by1 = D.bbox()
@@ -1012,8 +1116,8 @@ def make_sheet(key, P, outdir):
     D.rect("MARCO", tx0, by0 + 3, bx1 - 3, by0 + 33)
     D.text("TEXTO", (tx0 + 5, by0 + 23), 5.5, "ESTRUCTURA PARA TROVISEL 122 x 244")
     D.text("TEXTO", (tx0 + 5, by0 + 15), 4.2, P["nombre"])
-    D.text("TEXTO", (tx0 + 5, by0 + 8), 3, "Inferior a 88 cm / superior a 210 cm del piso  -  Unidades: cm  -  Lamina %s" % key)
-    D.text("TEXTO", (bx0 + 8, by0 + 8), 3, "Vistas generadas por generar_planos.py (modelo 3D con lineas ocultas eliminadas)")
+    D.text("TEXTO", (tx0 + 5, by0 + 8), 3, "Total 244 x 210 cm / trovisel de 88 a 210 cm  -  Unidades: cm  -  Lamina %s" % key)
+    D.text("TEXTO", (bx0 + 8, by0 + 8), 3, "Vistas generadas por generar_planos.py (modelo 3D, lineas ocultas eliminadas)")
 
     base = os.path.join(outdir, "trovisel_122x244_%s" % key)
     D.to_dxf(base + ".dxf")
@@ -1023,24 +1127,22 @@ def make_sheet(key, P, outdir):
 
 def lista_cortes(P, I):
     w = I["w"]
-    cx1 = I["cx1"]
-    wx = I["wx"]
-    a1, b1 = (0.0, Z_SUP), (ANCHO, Z_INF)
-    lx = poly_len(I["x1poly"], a1, b1)
     lb = poly_len(I["brace"], I["P2"], I["P1"])
-    return [
-        ("Pata lateral (larguero del bastidor)", 2, Z_SUP, "recto"),
-        ("Travesano superior e inferior", 2, ANCHO - 2 * w, "recto"),
-        ("Montante", 2, ALTO - 2 * w, "recto"),
-        ("Travesano intermedio lateral", 2, cx1 - w / 2 - w, "recto"),
-        ("Travesano intermedio central", 2, ANCHO / 3 - w, "recto"),
-        ("Diagonal de la cruz (pieza continua)", 1, lx, "puntas a 26.6/63.4 grados"),
-        ("Diagonal de la cruz (2 tramos)", 2, (lx - wx / math.sin(2 * math.atan2(ALTO, ANCHO))) / 2,
-         "un extremo a inglete"),
-        ("Pie abatible", 2, I["Lf"], "recto"),
-        ("Tornapunta trasera", 2, lb, "puntas segun plantilla"),
-        ("Taco separador", 2, 10.0, "recto"),
+    rows = [
+        ("Pata lateral", 2, Z_SUP, "del piso a 210"),
+        ("Travesano superior e inferior", 2, ANCHO - 2 * w, "entre patas"),
+        ("Travesano medio (cruz)", 1, ANCHO - 2 * w, "entre patas"),
     ]
+    if I["tubo"]:
+        rows.append(("Montante central (cruz), 2 tramos", 2, (ALTO - 3 * w) / 2, "arriba/abajo del medio"))
+    else:
+        rows.append(("Montante central (cruz)", 1, ALTO - 2 * w, "media madera al centro"))
+    rows += [
+        ("Pie", 2, I["Lf"], "hacia atras"),
+        ("Tornapunta", 2, lb, "puntas a inglete"),
+        ("Taco separador", 2, 8.0, ""),
+    ]
+    return rows
 
 
 def main():
