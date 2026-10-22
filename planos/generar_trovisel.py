@@ -1,6 +1,6 @@
 """Genera los planos DXF del trovisel 122 x 244 cm (horizontal).
 
-Dos versiones:
+Dos versiones (estructura móvil, apoyada en el piso, sin anclajes):
   - trovisel_madera.dxf : postes y bastidor de polín de madera
   - trovisel_metal.dxf  : postes y bastidor de PTR (tubular cuadrado) de acero
 
@@ -18,7 +18,6 @@ from ezdxf import colors
 from ezdxf.enums import TextEntityAlignment
 import numpy as np
 from shapely.geometry import Polygon, box as sbox
-from shapely.ops import unary_union
 
 from motor3d import Vista, caja, cilindro, prisma, dibujar, limites, unit
 
@@ -32,10 +31,8 @@ X_POSTES = (61.0, 183.0)   # ejes de postes (a cuartos del ancho)
 
 MADERA = (214, 172, 120)
 TABLERO = (236, 236, 228)
-CONCRETO = (196, 196, 196)
 ACERO = (150, 166, 182)
 HERRAJE = (105, 105, 110)
-GRAVA = (170, 160, 140)
 
 FECHA = "2026-10-22"
 
@@ -225,11 +222,28 @@ def filete(p0, p1, d1, d2, a=0.6):
 # ================================================================ VERSIÓN MADERA
 
 
+ZR = 1.0          # regatón de hule (madera)
+ZN = 1.0          # base del nivelador (metal)
+NEGRO = (55, 55, 55)
+Y_PAT_MAD = (-40.0, 135.0)
+Y_PAT_MET = (-40.0, 120.0)
+
+
+def regaton(xc, yy, r=3.0, h=ZR):
+    return cilindro((xc, yy, 0), (0, 0, 1), r, h, NEGRO, "regaton", 16)
+
+
+def nivelador(xc, yy):
+    return [cilindro((xc, yy, 0), (0, 0, 1), 3.5, 0.8, NEGRO, "nivelador", 16),
+            cilindro((xc, yy, 0.8), (0, 0, 1), 0.9, ZN - 0.8, HERRAJE, "nivelador", 6)]
+
+
 def modelo_madera():
     m = {}
     yb0, yb1 = E_TAB, E_TAB + 5.0           # bastidor 2"x4" acostado (5 de fondo)
     yp0, yp1 = yb1, yb1 + 10.0              # postes 4"x4"
-    m.update(yb=(yb0, yb1), yp=(yp0, yp1))
+    zf0, zf1 = ZR, ZR + 10.0                # patín 4"x4" sobre regatones
+    m.update(yb=(yb0, yb1), yp=(yp0, yp1), zf=(zf0, zf1), ypat=Y_PAT_MAD)
     sol = [caja(0, ANCHO, 0, E_TAB, Z_INF, Z_SUP, TABLERO, "tablero")]
     sol.append(caja(0, ANCHO, yb0, yb1, Z_SUP - 10, Z_SUP, MADERA, "larguero sup"))
     sol.append(caja(0, ANCHO, yb0, yb1, Z_INF, Z_INF + 10, MADERA, "larguero inf"))
@@ -238,18 +252,22 @@ def modelo_madera():
         sol.append(caja(xc - 5, xc + 5, yb0, yb1, Z_INF + 10, Z_SUP - 10, MADERA, "montante"))
     yc = (yp0 + yp1) / 2
     contra = []
+    z_pie = 3.0
     for xc, lado in zip(X_POSTES, (-1, 1)):
-        sol.append(caja(xc - 5, xc + 5, yp0, yp1, 0, Z_SUP, MADERA, "poste"))
-        sol.append(caja(xc - 15, xc + 15, yc - 15, yc + 15, -70, 0, CONCRETO, "dado",
-                        patron=("AR-CONC", 0.25)))
-        pg, d = poligono_contraventeo((yc, 160), (yc + 110, 0), yp0 + 1.0, 0, 10.0)
+        sol.append(caja(xc - 5, xc + 5, yp0, yp1, zf1, Z_SUP, MADERA, "poste"))
+        sol.append(caja(xc - 5, xc + 5, Y_PAT_MAD[0], Y_PAT_MAD[1], zf0, zf1, MADERA, "patin"))
+        for yy in (Y_PAT_MAD[0] + 5, Y_PAT_MAD[1] - 5):
+            sol.append(regaton(xc, yy))
+        pg, d = poligono_contraventeo((yc, 160), (yc + 110, z_pie), yp0 + 1.0, z_pie, 10.0)
         x0 = xc + 5 if lado > 0 else xc - 10
         sol.append(solido_yz(pg, x0, 5.0, MADERA, "contraventeo"))
-        xm = x0 + 2.5
-        sol.append(caja(xm - 12.5, xm + 12.5, yc + 110 - 12.5, yc + 110 + 12.5, -40, 0,
-                        CONCRETO, "dado contraventeo", patron=("AR-CONC", 0.25)))
         contra.append((x0, pg, d))
-    m.update(sol=sol, xs_v=xs_v, yc=yc, contra=contra, largo_contra=_largo(contra[0][1]))
+    sol.append(caja(X_POSTES[0] - 5, X_POSTES[1] + 5, 124, 134, zf1, zf1 + 5, MADERA, "travesaño"))
+    # perno contraventeo-patín, sobre el eje del contraventeo a media altura del patín
+    zpp = (zf0 + zf1) / 2 + 1
+    ypp = yc + 110 - (zpp - z_pie) * 110 / (160 - z_pie)
+    m.update(sol=sol, xs_v=xs_v, yc=yc, contra=contra, largo_contra=_largo(contra[0][1]),
+             pie=(ypp, zpp))
     return m
 
 
@@ -326,51 +344,66 @@ def detalles_madera(m):
         "   eje del perno a 160 cm del NPT.",
         "3. Corte vertical en el extremo superior."]))
 
-    # D5 base del contraventeo
-    pgb = pg.intersection(sbox(-1e4, -1, 1e4, 28))
-    yf = yc + 110
-    xm = x0 + 2.5
-    s = [caja(xm - 12.5, xm + 12.5, yf - 12.5, yf + 12.5, -14, 0, CONCRETO),
+    # D5 base del contraventeo y travesaño
+    zf0, zf1 = m["zf"]
+    ypp, zpp = m["pie"]
+    pgb = pg.intersection(sbox(-1e4, -1, 1e4, 34))
+    s = [caja(xc - 5, xc + 5, 92, Y_PAT_MAD[1], zf0, zf1, MADERA),
          solido_yz(pgb, x0, 5.0, MADERA),
-         caja(x0 + 5, x0 + 5.64, yf - 5, yf + 5, 0.64, 7.6, HERRAJE),
-         caja(x0 + 5, x0 + 12.6, yf - 5, yf + 5, 0, 0.64, HERRAJE)]
-    s += tuerca((x0 + 5.64, yf + 2.2, 4.2), (1, 0, 0), 1.2, 0.95, 0.48, 1.0)
-    s += tuerca((x0 + 9.6, yf, 0.64), (0, 0, 1), 1.2, 0.95, 0.48, 1.0)
-    D.append(("D5", "BASE DEL CONTRAVENTEO", atras, s, [
-        "1. Dado de concreto 25x25x40 cm, f'c=150 kg/cm².",
-        "2. Ángulo de acero 2\"x2\"x1/4\", L=10 cm.",
-        "3. Taquete expansivo 3/8\" x 3\" al dado.",
-        "4. Perno 3/8\" x 3 1/2\" ángulo-contraventeo.",
-        "5. Madera sin contacto directo con el suelo."]))
+         caja(xc - 32, xc + 5, 124, 134, zf1, zf1 + 5, MADERA),
+         regaton(xc, Y_PAT_MAD[1] - 5)]
+    s += tuerca((x0 + 5, ypp, zpp), (1, 0, 0), 1.3, 1.0, 0.48)
+    s += [cilindro((xc, 129, zf1 + 5), (0, 0, 1), 1.3, 0.3, HERRAJE, lados=16),
+          cilindro((xc, 129, zf1 + 5.3), (0, 0, 1), 0.95, 0.6, HERRAJE, lados=6)]
+    D.append(("D5", "CONTRAVENTEO - PATÍN Y TRAVESAÑO", atras, s, [
+        "1. Contraventeo atornillado a la cara exterior del",
+        "   patín con perno 3/8\" x 7\", rondanas y tuerca.",
+        "2. Travesaño trasero barrote 2\"x4\" acostado sobre",
+        "   ambos patines, 2 pijas 3/8\" x 4\" por patín.",
+        "3. Regatón de hule de 6 cm diám. en cada extremo del",
+        "   patín (opcional: rodaja 3\" con freno, ver nota)."]))
 
-    # D6 empotre del poste
-    s = [caja(xc - 15, xc + 15, yc - 15, yc + 15, -70, 0, CONCRETO),
-         caja(xc - 18, xc + 18, yc - 18, yc + 18, -80, -70, GRAVA),
-         caja(xc - 5, xc + 5, yp0, yp1, 0, 40, MADERA)]
-    D.append(("D6", "EMPOTRE DEL POSTE", atras, s, [
-        "1. Dado de concreto 30x30x70 cm, f'c=150 kg/cm².",
-        "2. Poste empotrado 60 cm, extremo con 2 clavos",
-        "   de 4\" cruzados como anclaje.",
-        "3. Plantilla de grava 10 cm para drenaje.",
-        "4. Tramo empotrado con impermeabilizante",
-        "   asfáltico; remate del dado con chaflán."]))
+    # D6 unión poste - patín
+    s = [caja(xc - 5, xc + 5, Y_PAT_MAD[0], 45, zf0, zf1, MADERA),
+         caja(xc - 5, xc + 5, yp0, yp1, zf1, 48, MADERA),
+         regaton(xc, Y_PAT_MAD[0] + 5)]
+    a, t = 7.6, 0.64
+    for yy, sg in ((yp1, 1), (yp0, -1)):
+        yv0, yv1 = sorted((yy, yy + sg * t))
+        yh0, yh1 = sorted((yy, yy + sg * a))
+        s.append(caja(xc - 4, xc + 4, yv0, yv1, zf1 + t, zf1 + a, HERRAJE))
+        s.append(caja(xc - 4, xc + 4, yh0, yh1, zf1, zf1 + t, HERRAJE))
+    s += tuerca((xc, yp1 + t, zf1 + 4.5), (0, 1, 0), 1.2, 0.95, 0.48, 1.0)
+    for yy in (yp1 + 5, yp0 - 5):
+        s += [cilindro((xc, yy, zf1 + t), (0, 0, 1), 1.2, 0.3, HERRAJE, lados=16),
+              cilindro((xc, yy, zf1 + t + 0.3), (0, 0, 1), 0.95, 0.6, HERRAJE, lados=6)]
+    D.append(("D6", "UNIÓN POSTE - PATÍN", atras, s, [
+        "1. Patín polín 4\"x4\" L=175 cm apoyado en el piso,",
+        "   40 cm al frente del tablero (sin empotrar).",
+        "2. Poste a tope sobre el patín con 2 ángulos",
+        "   2\"x2\"x1/4\" L=8 cm (frente y atrás).",
+        "3. Perno 3/8\" x 6\" pasado por poste y ángulos;",
+        "   pija 3/8\" x 3\" de cada ángulo al patín."]))
     return D
 
 
 NOTAS_MADERA = [
     "NOTAS GENERALES",
-    "1. Cotas en cm. Niveles referidos al nivel de piso terminado (NPT ±0.00).",
+    "1. Cotas en cm. Niveles referidos al nivel de piso (NPT ±0.00).",
     "2. Tablero trovisel 122x244 cm en posición horizontal: borde inferior a",
     "   88 cm y borde superior a 210 cm del piso. Espesor supuesto 1.5 cm.",
-    "3. Madera de pino de 1a, seca, tratada (sales CCA o equivalente).",
-    "   Medidas nominales: polín 4\"x4\" = 10x10, barrote 2\"x4\" = 5x10.",
-    "4. Bastidor con largueros corridos y 5 montantes a ejes 5, 61, 122,",
+    "3. ESTRUCTURA MÓVIL: autoportante, apoyada en el piso sobre 2 patines",
+    "   con regatones de hule. Sin dados, anclas ni empotramientos.",
+    "4. Madera de pino de 1a, seca, tratada. Medidas nominales:",
+    "   polín 4\"x4\" = 10x10, barrote 2\"x4\" = 5x10.",
+    "5. Bastidor con largueros corridos y 5 montantes a ejes 5, 61, 122,",
     "   183 y 239 cm. Postes a ejes 61 y 183 cm (cuartos del ancho).",
-    "5. Herrajes galvanizados. Pretaladrar todos los pernos.",
-    "6. Concreto f'c=150 kg/cm², agregado máx. 3/4\". Colar con el poste",
-    "   aplomado y apuntalado; retirar puntales a los 7 días.",
-    "7. Acabado: sellador y esmalte o barniz exterior en toda la madera.",
-    "8. Verificar en obra el tipo de suelo y la exposición al viento.",
+    "6. Herrajes galvanizados. Pretaladrar todos los pernos.",
+    "7. Opcional ruedas: rodaja giratoria 3\" con freno en lugar de regatones;",
+    "   recortar el poste lo que suba la rodaja para mantener 88/210 cm.",
+    "8. En exterior o con viento, lastrar los patines (sacos de arena",
+    "   o contrapeso de 20 kg mín. por patín) o retirar el anuncio.",
+    "9. Acabado: sellador y esmalte o barniz exterior en toda la madera.",
 ]
 
 
@@ -380,20 +413,21 @@ def materiales_madera(m):
         "LISTA DE MATERIALES",
         "Pza  Descripción",
         " 1   Tablero trovisel 122 x 244 cm",
-        " 2   Poste polín 4\"x4\" L=270 cm (210 + 60 empotre)",
+        f" 2   Poste polín 4\"x4\" L={Z_SUP - ZR - 10:.0f} cm",
+        f" 2   Patín polín 4\"x4\" L={Y_PAT_MAD[1] - Y_PAT_MAD[0]:.0f} cm",
         " 2   Larguero barrote 2\"x4\" L=244 cm",
-        f" 5   Montante barrote 2\"x4\" L=102 cm",
+        " 5   Montante barrote 2\"x4\" L=102 cm",
         f" 2   Contraventeo barrote 2\"x4\" L={lc:.0f} cm",
+        f" 1   Travesaño trasero barrote 2\"x4\" L={X_POSTES[1] - X_POSTES[0] + 10:.0f} cm",
         " 4   Perno coche 3/8\" x 7\" c/rondana y tuerca",
-        " 2   Perno 3/8\" x 7\" c/2 rondanas y tuerca",
+        " 4   Perno 3/8\" x 7\" c/2 rondanas y tuerca",
+        " 2   Perno 3/8\" x 6\" c/rondanas y tuerca",
         " 6   Pija (lag) 3/8\" x 5\" c/rondana",
-        " 2   Ángulo 2\"x2\"x1/4\" L=10 cm",
-        " 2   Taquete expansivo 3/8\" x 3\" + perno 3/8\" x 3 1/2\"",
+        " 8   Pija (lag) 3/8\" x 3\"/4\" c/rondana",
+        " 4   Ángulo 2\"x2\"x1/4\" L=8 cm",
         "10   Escuadra metálica 3\" (L o T)",
         "40   Tornillo madera #10 x 1 1/4\" c/rondana",
-        " 2   Dado concreto 30x30x70 cm (poste)",
-        " 2   Dado concreto 25x25x40 cm (contraventeo)",
-        "      Concreto total aprox. 0.18 m³",
+        " 4   Regatón de hule de 6 cm diám. (u opcional: rodaja 3\" c/freno)",
     ]
 
 
@@ -402,7 +436,14 @@ def materiales_madera(m):
 P3 = 7.62     # PTR 3"
 P15 = 3.81    # PTR 1 1/2"
 P2 = 5.08     # PTR 2"
-E_PB = 0.95   # placa base 3/8"
+
+
+def cartelas(xc, yp0, yp1, zf1, tc=0.95, largo=10.0, alto=15.0):
+    out = []
+    for ya, sg in ((yp0, -1), (yp1, 1)):
+        tri = [(xc - tc / 2, ya, zf1), (xc - tc / 2, ya + sg * largo, zf1), (xc - tc / 2, ya, zf1 + alto)]
+        out.append(prisma(tri, (tc, 0, 0), ACERO, "cartela"))
+    return out
 
 
 def modelo_metal():
@@ -410,7 +451,8 @@ def modelo_metal():
     yb0, yb1 = E_TAB, E_TAB + P15
     yp0, yp1 = yb1, yb1 + P3
     yc = (yp0 + yp1) / 2
-    m.update(yb=(yb0, yb1), yp=(yp0, yp1), yc=yc)
+    zf0, zf1 = ZN, ZN + P3
+    m.update(yb=(yb0, yb1), yp=(yp0, yp1), yc=yc, zf=(zf0, zf1), ypat=Y_PAT_MET)
     sol = [caja(0, ANCHO, 0, E_TAB, Z_INF, Z_SUP, TABLERO, "tablero")]
     sol.append(caja(0, ANCHO, yb0, yb1, Z_SUP - P15, Z_SUP, ACERO, "larguero sup"))
     sol.append(caja(0, ANCHO, yb0, yb1, Z_INF, Z_INF + P15, ACERO, "larguero inf"))
@@ -418,19 +460,20 @@ def modelo_metal():
     for xc in xs_v:
         sol.append(caja(xc - P15 / 2, xc + P15 / 2, yb0, yb1, Z_INF + P15, Z_SUP - P15, ACERO, "montante"))
     contra = []
-    yf = yp1 + 100
+    yf = 95.0
     for xc in X_POSTES:
-        sol.append(caja(xc - P3 / 2, xc + P3 / 2, yp0, yp1, E_PB, Z_SUP, ACERO, "poste"))
-        sol.append(caja(xc - 12.5, xc + 12.5, yc - 12.5, yc + 12.5, 0, E_PB, ACERO, "placa base"))
-        sol.append(caja(xc - 20, xc + 20, yc - 20, yc + 20, -80, 0, CONCRETO, "dado",
-                        patron=("AR-CONC", 0.25)))
-        pg, d = poligono_contraventeo((yp1, 150), (yf, 0.64), yp1, 0.64, P2)
+        sol.append(caja(xc - P3 / 2, xc + P3 / 2, yp0, yp1, zf1, Z_SUP, ACERO, "poste"))
+        sol.append(caja(xc - P3 / 2, xc + P3 / 2, Y_PAT_MET[0], Y_PAT_MET[1], zf0, zf1, ACERO, "patin"))
+        sol += cartelas(xc, yp0, yp1, zf1)
+        for yy in (Y_PAT_MET[0] + 5, Y_PAT_MET[1] - 5):
+            sol += nivelador(xc, yy)
+        pg, d = poligono_contraventeo((yp1, 150), (yf, zf1), yp1, zf1, P2)
         sol.append(solido_yz(pg, xc - P2 / 2, P2, ACERO, "contraventeo"))
-        sol.append(caja(xc - 7.5, xc + 7.5, yf - 7.5, yf + 7.5, 0, 0.64, ACERO, "placa contraventeo"))
-        sol.append(caja(xc - 15, xc + 15, yf - 15, yf + 15, -40, 0, CONCRETO, "dado contraventeo",
-                        patron=("AR-CONC", 0.25)))
         contra.append((xc - P2 / 2, pg, d))
-    m.update(sol=sol, xs_v=xs_v, contra=contra, yf=yf, largo_contra=_largo(contra[0][1]))
+    sol.append(caja(X_POSTES[0] - P3 / 2, X_POSTES[1] + P3 / 2, 108, 108 + P2, zf1, zf1 + P2,
+                    ACERO, "travesaño"))
+    m.update(sol=sol, xs_v=xs_v, contra=contra, yf=yf, largo_contra=_largo(contra[0][1]),
+             pie=(yf, zf1))
     return m
 
 
@@ -438,7 +481,6 @@ def detalles_metal(m):
     yb0, yb1 = m["yb"]
     yp0, yp1 = m["yp"]
     yc = m["yc"]
-    yf = m["yf"]
     D = []
     atras = (1, 1, 1)
     frente = (-1, -1, 1)
@@ -507,76 +549,69 @@ def detalles_metal(m):
          filete((xb, yp1, zb_), (xb + P2, yp1, zb_), (0, 0, 1), (0, d[0], d[1]), 0.6)]
     D.append(("D4", "UNIÓN CONTRAVENTEO - POSTE", atras, s, [
         "1. Contraventeo PTR 2\"x2\" cal. 14 en la cara",
-        "   posterior del poste, a ~55° con el piso.",
+        "   posterior del poste, a ~60° con el piso.",
         "2. Extremo cortado a bisel, soldadura perimetral",
         "   de filete 3/16\" (E-7018).",
         "3. Eje del contraventeo a 150 cm del NPT."]))
 
-    # D5 base del contraventeo
-    pgb = pg.intersection(sbox(-1e4, -1, 1e4, 26))
-    ys = [c[0] for c in pg.exterior.coords if abs(c[1] - 0.64) < 1e-6]
+    # D5 base del contraventeo y travesaño
+    zf0, zf1 = m["zf"]
+    pgb = pg.intersection(sbox(-1e4, -1, 1e4, 36))
+    ys = [c[0] for c in pg.exterior.coords if abs(c[1] - zf1) < 1e-6]
     ya, yb_ = min(ys), max(ys)
-    s = [caja(xc - 15, xc + 15, yf - 15, yf + 15, -14, 0, CONCRETO),
-         caja(xc - 7.5, xc + 7.5, yf - 7.5, yf + 7.5, 0, 0.64, ACERO),
+    s = [caja(x0, x1, 78, Y_PAT_MET[1], zf0, zf1, ACERO, tubo=("y", e)),
          solido_yz(pgb, xb, P2, ACERO),
-         filete((xb + P2, ya, 0.64), (xb + P2, yb_, 0.64), (1, 0, 0), (0, 0, 1), 0.5)]
-    for yy in (yf - 5.5, yf + 5.5):
-        s += tuerca((xc, yy, 0.64), (0, 0, 1), 1.2, 0.9, 0.48, 1.6)
-    D.append(("D5", "BASE DEL CONTRAVENTEO", atras, s, [
-        "1. Dado de concreto 30x30x40 cm, f'c=200 kg/cm².",
-        "2. Placa 15x15x1/4\" con 2 anclas de redondo",
-        "   3/8\" L=30 cm con gancho, tuerca y rondana.",
-        "3. Contraventeo soldado a la placa con filete",
-        "   3/16\" perimetral."]))
+         caja(xc - 30, x1, 108, 108 + P2, zf1, zf1 + P2, ACERO),
+         filete((xb + P2, ya, zf1), (xb + P2, yb_, zf1), (1, 0, 0), (0, 0, 1), 0.5),
+         filete((xc - 30, 108 + P2, zf1), (x1, 108 + P2, zf1), (0, 1, 0), (0, 0, 1), 0.5)]
+    s += nivelador(xc, Y_PAT_MET[1] - 5)
+    D.append(("D5", "CONTRAVENTEO - PATÍN Y TRAVESAÑO", atras, s, [
+        "1. Contraventeo PTR 2\"x2\" soldado sobre el patín",
+        "   con filete 3/16\" perimetral.",
+        "2. Travesaño trasero PTR 2\"x2\" cal. 14 soldado",
+        "   sobre ambos patines.",
+        "3. Pata niveladora (tornillo 3/8\" con base de hule",
+        "   de 7 cm diám.) en cada extremo del patín; tuerca soldada",
+        "   en la cara inferior. Opcional: rodaja 3\" c/freno."]))
 
-    # D6 base del poste
-    yc0 = yc
-    s = [caja(xc - 20, xc + 20, yc0 - 20, yc0 + 20, -16, 0, CONCRETO),
-         caja(xc - 12.5, xc + 12.5, yc0 - 12.5, yc0 + 12.5, 0, E_PB, ACERO),
-         caja(x0, x1, yp0, yp1, E_PB, 40, ACERO, tubo=("z", 0.30))]
+    # D6 unión poste - patín
+    s = [caja(x0, x1, Y_PAT_MET[0], 40, zf0, zf1, ACERO),
+         caja(x0, x1, yp0, yp1, zf1, 45, ACERO, tubo=("z", 0.30))]
+    s += cartelas(xc, yp0, yp1, zf1)
+    s += nivelador(xc, Y_PAT_MET[0] + 5)
     tc = 0.95
-    for sx, sy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-        if sx:
-            xa = x1 if sx > 0 else x0
-            tri = [(xa, yc0 - tc / 2, E_PB), (xa + 8 * sx, yc0 - tc / 2, E_PB), (xa, yc0 - tc / 2, E_PB + 12)]
-            s.append(prisma(tri, (0, tc, 0), ACERO))
-        else:
-            ya_ = yp1 if sy > 0 else yp0
-            tri = [(xc - tc / 2, ya_, E_PB), (xc - tc / 2, ya_ + 8 * sy, E_PB), (xc - tc / 2, ya_, E_PB + 12)]
-            s.append(prisma(tri, (tc, 0, 0), ACERO))
-    for yy0, yy1 in [(yp0, yc0 - tc / 2), (yc0 + tc / 2, yp1)]:
-        s.append(filete((x1, yy0, E_PB), (x1, yy1, E_PB), (1, 0, 0), (0, 0, 1), 0.5))
+    s.append(filete((x1, yp0, zf1), (x1, yp1, zf1), (1, 0, 0), (0, 0, 1), 0.5))
     for xx0, xx1 in [(x0, xc - tc / 2), (xc + tc / 2, x1)]:
-        s.append(filete((xx0, yp1, E_PB), (xx1, yp1, E_PB), (0, 1, 0), (0, 0, 1), 0.5))
-    for dx in (-9, 9):
-        for dy in (-9, 9):
-            s += tuerca((xc + dx, yc0 + dy, E_PB), (0, 0, 1), 1.5, 1.15, 0.64, 2.0)
-    D.append(("D6", "BASE DEL POSTE", atras, s, [
-        "1. Placa base 25x25x3/8\" con 4 barrenos 5/8\".",
-        "2. 4 anclas redondo 1/2\" L=45 cm con gancho,",
-        "   tuerca y rondana, a 18 cm entre ejes.",
-        "3. 4 cartabones placa 3/8\" de 8x12 cm.",
-        "4. Filete 3/16\" perimetral poste-placa.",
-        "5. Dado 40x40x80 cm, f'c=200 kg/cm²; nivelar con",
-        "   mortero sin contracción (grout) 2 cm."]))
+        s.append(filete((xx0, yp1, zf1), (xx1, yp1, zf1), (0, 1, 0), (0, 0, 1), 0.5))
+    D.append(("D6", "UNIÓN POSTE - PATÍN", atras, s, [
+        f"1. Patín PTR 3\"x3\" cal. 11 L={Y_PAT_MET[1] - Y_PAT_MET[0]:.0f} cm apoyado en el piso,",
+        "   40 cm al frente del tablero (sin anclar).",
+        "2. Poste soldado a tope sobre el patín, filete",
+        "   3/16\" perimetral (E-7018).",
+        "3. 2 cartelas placa 3/8\" de 10x15 cm (frente y",
+        "   atrás) soldadas a poste y patín.",
+        "4. Extremos del patín con tapa soldada."]))
     return D
 
 
 NOTAS_METAL = [
     "NOTAS GENERALES",
-    "1. Cotas en cm. Niveles referidos al nivel de piso terminado (NPT ±0.00).",
+    "1. Cotas en cm. Niveles referidos al nivel de piso (NPT ±0.00).",
     "2. Tablero trovisel 122x244 cm en posición horizontal: borde inferior a",
     "   88 cm y borde superior a 210 cm del piso. Espesor supuesto 1.5 cm.",
-    "3. Acero ASTM A500 (PTR) y A36 (placas). Postes PTR 3\"x3\" cal. 11,",
-    "   bastidor PTR 1 1/2\"x1 1/2\" cal. 14, contraventeos PTR 2\"x2\" cal. 14.",
-    "4. Bastidor con largueros corridos y 5 montantes a ejes 1.9, 61, 122,",
+    "3. ESTRUCTURA MÓVIL: autoportante, apoyada en el piso sobre 2 patines",
+    "   con patas niveladoras. Sin placas base, anclas, dados ni empotramientos.",
+    "4. Acero ASTM A500 (PTR) y A36 (placas). Postes y patines PTR 3\"x3\"",
+    "   cal. 11, bastidor PTR 1 1/2\" cal. 14, contraventeos y travesaño PTR 2\".",
+    "5. Bastidor con largueros corridos y 5 montantes a ejes 1.9, 61, 122,",
     "   183 y 242.1 cm. Postes a ejes 61 y 183 cm (cuartos del ancho).",
-    "5. Soldadura con electrodo E-7018 (estructural) y E-6013 (bastidor).",
-    "   Limpiar escoria y esmerilar cordones visibles.",
-    "6. Concreto f'c=200 kg/cm². Anclas colocadas con plantilla antes del",
-    "   colado; montar la estructura a los 7 días.",
-    "7. Acabado: primario anticorrosivo y 2 manos de esmalte alquidálico.",
-    "8. Verificar en obra el tipo de suelo y la exposición al viento.",
+    "6. Soldadura E-7018 (estructural) y E-6013 (bastidor). Esmerilar cordones",
+    "   visibles. Extremos abiertos de PTR con tapa soldada.",
+    "7. Opcional ruedas: rodaja giratoria 3\" con freno en lugar de niveladores;",
+    "   recortar el poste lo que suba la rodaja para mantener 88/210 cm.",
+    "8. En exterior o con viento, lastrar los patines (contrapeso de 20 kg",
+    "   mín. por patín) o retirar el anuncio.",
+    "9. Acabado: primario anticorrosivo y 2 manos de esmalte alquidálico.",
 ]
 
 
@@ -586,21 +621,18 @@ def materiales_metal(m):
         "LISTA DE MATERIALES",
         "Pza  Descripción",
         " 1   Tablero trovisel 122 x 244 cm",
-        " 2   Poste PTR 3\"x3\" cal. 11 L=209 cm",
+        f" 2   Poste PTR 3\"x3\" cal. 11 L={Z_SUP - ZN - P3:.1f} cm",
+        f" 2   Patín PTR 3\"x3\" cal. 11 L={Y_PAT_MET[1] - Y_PAT_MET[0]:.0f} cm",
         " 2   Larguero PTR 1 1/2\"x1 1/2\" cal. 14 L=244 cm",
         f" 5   Montante PTR 1 1/2\"x1 1/2\" cal. 14 L={ALTO - 2 * P15:.1f} cm",
         f" 2   Contraventeo PTR 2\"x2\" cal. 14 L={lc:.0f} cm",
-        " 2   Placa base 25x25x3/8\"",
-        " 8   Cartabón placa 3/8\" 8x12 cm",
-        " 8   Ancla redondo 1/2\" L=45 cm c/tuerca y rondana",
-        " 2   Placa 15x15x1/4\" (contraventeo)",
-        " 4   Ancla redondo 3/8\" L=30 cm c/tuerca y rondana",
-        " 2   Tapa placa 3/16\" 8x8 cm (remate de postes)",
+        f" 1   Travesaño trasero PTR 2\"x2\" cal. 14 L={X_POSTES[1] - X_POSTES[0] + P3:.1f} cm",
+        " 4   Cartela placa 3/8\" 10x15 cm",
+        " 4   Pata niveladora 3/8\" base hule de 7 cm diám. c/tuerca soldada",
+        "      (u opcional: rodaja giratoria 3\" con freno)",
+        " 6   Tapa placa 3/16\" 8x8 cm (postes y patines)",
         " 4   Tapa lámina cal. 14 (extremos de largueros)",
         "40   Pija autorroscante #10 x 1\" c/rondana neopreno",
-        " 2   Dado concreto 40x40x80 cm (poste)",
-        " 2   Dado concreto 30x30x40 cm (contraventeo)",
-        "      Concreto total aprox. 0.33 m³",
     ]
 
 
@@ -614,26 +646,23 @@ def dibujar_alzados(msp, m, version):
     sol = m["sol"]
     yp0, yp1 = m["yp"]
     yb0, yb1 = m["yb"]
+    zf0, zf1 = m["zf"]
+    ypa, ypb = m["ypat"]
     madera = version == "madera"
 
     # ---------------- alzado posterior (visto desde atrás)
     vp = Vista((0, 1, 0), 1.0, (OX + ANCHO, OY))
     def ux(x):
         return OX + ANCHO - x
-    res = dibujar(msp, sol, vp, "A-ESTRUCTURA", "A-RELLENO", plano=True)
-    huecos = [pg for pg, s, n, _ in res if "dado" in s.nombre]
-    franja_terreno(msp, OX - 45, OX + ANCHO + 45, OY, [unary_union(huecos).buffer(0.01)])
+    dibujar(msp, sol, vp, "A-ESTRUCTURA", "A-RELLENO", plano=True)
+    franja_terreno(msp, OX - 45, OX + ANCHO + 45, OY, [])
     for xc in X_POSTES:
-        msp.add_line((ux(xc), OY - 95), (ux(xc), OY + Z_SUP + 12), dxfattribs={"layer": "A-EJES"})
+        msp.add_line((ux(xc), OY - 8), (ux(xc), OY + Z_SUP + 12), dxfattribs={"layer": "A-EJES"})
         if madera:
-            rect(msp, ux(xc) - 5, OY - 60, ux(xc) + 5, OY, "A-OCULTAS")
             for z in (Z_INF + 5, Z_SUP - 5):
                 msp.add_circle((ux(xc), OY + z), 1.3, dxfattribs={"layer": "A-HERRAJES"})
             for z in (120, 150, 180):
                 msp.add_circle((ux(xc), OY + z), 1.0, dxfattribs={"layer": "A-HERRAJES"})
-        else:
-            for dx in (-9, 9):
-                msp.add_line((ux(xc) + dx, OY), (ux(xc) + dx, OY - 45), dxfattribs={"layer": "A-OCULTAS"})
     msp.add_line((ux(ANCHO / 2), OY + Z_INF - 6), (ux(ANCHO / 2), OY + Z_SUP + 6),
                  dxfattribs={"layer": "A-EJES"})
     # cotas
@@ -647,17 +676,9 @@ def dibujar_alzados(msp, m, version):
     cota(msp, (xi, OY + Z_INF), (xi, zt), (xi - 18, 0), vertical=True)
     cota(msp, (xi, OY), (xi, zt), (xi - 34, 0), vertical=True)
     xd = ux(0)
-    if madera:
-        prof, ancho_d, emp = 70, 30, 60
-    else:
-        prof, ancho_d, emp = 80, 40, 45
-    cota(msp, (ux(X_POSTES[0]) + ancho_d / 2, OY), (ux(X_POSTES[0]) + ancho_d / 2, OY - prof),
-         (xd + 22, 0), vertical=True)
-    cota(msp, (ux(X_POSTES[0]) - ancho_d / 2, OY - prof), (ux(X_POSTES[0]) + ancho_d / 2, OY - prof),
-         (0, OY - prof - 12))
-    if madera:
-        cota(msp, (ux(X_POSTES[0]) - 5, OY - 60), (ux(X_POSTES[0]) - 5, OY), (xd + 36, 0),
-             vertical=True, texto_="<> empotre")
+    cota(msp, (ux(X_POSTES[1]), OY), (ux(X_POSTES[0]), OY), (0, OY - 22))
+    cota(msp, (xd, OY), (xd, OY + zf1), (xd + 26, 0), vertical=True,
+         texto_="<> patín")
     # textos
     texto(msp, "ALZADO POSTERIOR", OX + ANCHO / 2, OY - 120, 7, TextEntityAlignment.BOTTOM_CENTER)
     texto(msp, "(visto desde atrás)  Cotas en cm", OX + ANCHO / 2, OY - 128, 3.6,
@@ -666,63 +687,63 @@ def dibujar_alzados(msp, m, version):
         nota_guia(msp, "Poste polín 4\"x4\" (10x10)", (ux(X_POSTES[1]), OY + 60), (OX - 40, OY + 40))
         nota_guia(msp, "Larguero 2\"x4\" (5x10)", (ux(100), OY + Z_INF + 5), (ux(100) + 12, OY + 60))
         nota_guia(msp, "Montante 2\"x4\"", (ux(ANCHO / 2), OY + 150), (ux(ANCHO / 2) + 15, OY + 140))
-        nota_guia(msp, "Contraventeo 2\"x4\"", (ux(X_POSTES[0]) + 8, OY + 40), (ux(X_POSTES[0]) + 30, OY + 25))
-        nota_guia(msp, "Dado 30x30x70", (ux(X_POSTES[1]) + 10, OY - 50), (OX - 40, OY - 95))
+        nota_guia(msp, "Contraventeo 2\"x4\"", (ux(X_POSTES[0]) + 8, OY + 40), (ux(X_POSTES[0]) + 30, OY + 30))
+        nota_guia(msp, "Travesaño trasero 2\"x4\"", (ux(ANCHO / 2), OY + zf1 + 2.5), (ux(ANCHO / 2) + 20, OY + 40))
+        nota_guia(msp, "Patín polín 4\"x4\" + regatón de hule", (ux(X_POSTES[1]), OY + 5), (OX - 40, OY - 40))
     else:
         nota_guia(msp, "Poste PTR 3\"x3\" cal. 11", (ux(X_POSTES[1]) + 2, OY + 60), (OX - 40, OY + 40))
         nota_guia(msp, "Larguero PTR 1 1/2\"", (ux(100), OY + Z_INF + 2), (ux(100) + 12, OY + 60))
         nota_guia(msp, "Montante PTR 1 1/2\"", (ux(ANCHO / 2), OY + 150), (ux(ANCHO / 2) + 15, OY + 140))
-        nota_guia(msp, "Contraventeo PTR 2\"x2\"", (ux(X_POSTES[0]), OY + 30), (ux(X_POSTES[0]) + 30, OY + 15))
-        nota_guia(msp, "Dado 40x40x80", (ux(X_POSTES[1]) + 10, OY - 50), (OX - 40, OY - 95))
-        nota_guia(msp, "Placa base 25x25x3/8\"", (ux(X_POSTES[0]) - 11, OY + 0.5), (ux(X_POSTES[0]) - 45, OY + 20))
+        nota_guia(msp, "Contraventeo PTR 2\"x2\"", (ux(X_POSTES[0]), OY + 30), (ux(X_POSTES[0]) + 30, OY + 22))
+        nota_guia(msp, "Travesaño trasero PTR 2\"", (ux(ANCHO / 2), OY + zf1 + 2.5), (ux(ANCHO / 2) + 20, OY + 40))
+        nota_guia(msp, "Patín PTR 3\"x3\" + pata niveladora", (ux(X_POSTES[1]), OY + 5), (OX - 40, OY - 40))
     nota_guia(msp, "Tablero trovisel 122x244", (ux(100), OY + 175), (ux(100) + 12, OY + 190))
+    texto(msp, "ESTRUCTURA MÓVIL: apoyada en el piso, sin anclajes ni empotramientos",
+          OX + ANCHO / 2, OY - 60, 4.2, TextEntityAlignment.BOTTOM_CENTER)
     # llamadas a detalles
-    llamada(msp, "D2", (ux(ANCHO) + 3, zt - 3), (ux(ANCHO) + 22, zt + 2 - 30 + 30 - 13))
+    llamada(msp, "D2", (ux(ANCHO) + 3, zt - 3), (ux(ANCHO) + 22, zt - 13))
     llamada(msp, "D3", (ux(X_POSTES[1]), zt - 5), (ux(X_POSTES[1]) - 20, zt - 30))
-    llamada(msp, "D6", (ux(X_POSTES[0]), OY - 3), (ux(X_POSTES[0]) - 28, OY - 25))
+    llamada(msp, "D6", (ux(X_POSTES[0]), OY + zf1 + 2), (ux(X_POSTES[0]) - 25, OY + 30))
     llamada(msp, "D1", (ux(0) - 3, zt - 3), (ux(0) - 22, zt - 16))
 
     # ---------------- alzado lateral (visto desde la derecha)
     vl = Vista((1, 0, 0), 1.0, (SX, OY))
-    res = dibujar(msp, sol, vl, "A-ESTRUCTURA", "A-RELLENO", plano=True)
-    huecos = [pg for pg, s, n, _ in res if "dado" in s.nombre]
-    yfin = SX + (m["contra"][0][1].bounds[2]) + 40
-    franja_terreno(msp, SX - 50, yfin, OY, [unary_union(huecos).buffer(0.01)])
+    dibujar(msp, sol, vl, "A-ESTRUCTURA", "A-RELLENO", plano=True)
+    franja_terreno(msp, SX + ypa - 25, SX + ypb + 45, OY, [])
     yc = m["yc"]
     def uy(y):
         return SX + y
-    msp.add_line((uy(yc), OY - 95), (uy(yc), OY + Z_SUP + 12), dxfattribs={"layer": "A-EJES"})
-    pg = m["contra"][0][1]
+    msp.add_line((uy(yc), OY - 8), (uy(yc), OY + Z_SUP + 12), dxfattribs={"layer": "A-EJES"})
+    ypie, zpie = m["pie"]
     if madera:
-        rect(msp, uy(yp0), OY - 60, uy(yp1), OY, "A-OCULTAS")
         msp.add_circle((uy(yc), OY + 160), 1.3, dxfattribs={"layer": "A-HERRAJES"})
-        yfoot = yc + 110
-    else:
-        for dy in (-9, 9):
-            msp.add_line((uy(yc) + dy, OY), (uy(yc) + dy, OY - 45), dxfattribs={"layer": "A-OCULTAS"})
-        yfoot = m["yf"]
-    msp.add_line((uy(yfoot), OY - 50), (uy(yfoot), OY + 20), dxfattribs={"layer": "A-EJES"})
+        msp.add_circle((uy(ypie), OY + zpie), 1.3, dxfattribs={"layer": "A-HERRAJES"})
     # cotas laterales
     zt = OY + Z_SUP
     cota(msp, (uy(0), zt), (uy(yb0), zt), (0, zt + 8), texto_="<> tablero")
     cota(msp, (uy(yb0), zt), (uy(yb1), zt), (0, zt + 17), texto_="<> bastidor")
     cota(msp, (uy(yp0), zt), (uy(yp1), zt), (0, zt + 26), texto_="<> poste")
     cota(msp, (uy(0), zt), (uy(yp1), zt), (0, zt + 36))
-    cota(msp, (uy(yc), OY), (uy(yfoot), OY), (0, OY - 100 if madera else OY - 108))
-    cota(msp, (uy(0), OY), (uy(0), OY + Z_INF), (uy(0) - 18, 0), vertical=True)
-    cota(msp, (uy(0), OY + Z_INF), (uy(0), zt), (uy(0) - 18, 0), vertical=True)
-    cota(msp, (uy(0), OY), (uy(0), zt), (uy(0) - 34, 0), vertical=True)
+    cota(msp, (uy(ypa), OY), (uy(0), OY), (0, OY - 16))
+    cota(msp, (uy(0), OY), (uy(ypb), OY), (0, OY - 16))
+    cota(msp, (uy(ypa), OY), (uy(ypb), OY), (0, OY - 30), texto_="<> patín")
+    cota(msp, (uy(yc), OY + zf1), (uy(ypie), OY + zf1), (0, OY - 44))
+    xl = uy(ypa)
+    cota(msp, (xl, OY), (xl, OY + Z_INF), (xl - 14, 0), vertical=True)
+    cota(msp, (xl, OY + Z_INF), (xl, zt), (xl - 14, 0), vertical=True)
+    cota(msp, (xl, OY), (xl, zt), (xl - 28, 0), vertical=True)
     z_ap = 160 if madera else 150
-    cota(msp, (uy(yc), OY), (uy(yc), OY + z_ap), (uy(yfoot) + 25, 0), vertical=True,
+    cota(msp, (uy(yc), OY), (uy(yc), OY + z_ap), (uy(ypb) + 25, 0), vertical=True,
          texto_="<> eje contraventeo")
-    texto(msp, "ALZADO LATERAL", SX + 60, OY - 120, 7, TextEntityAlignment.BOTTOM_CENTER)
-    texto(msp, "(visto desde la derecha)  Cotas en cm", SX + 60, OY - 128, 3.6,
+    texto(msp, "ALZADO LATERAL", SX + 50, OY - 120, 7, TextEntityAlignment.BOTTOM_CENTER)
+    texto(msp, "(visto desde la derecha)  Cotas en cm", SX + 50, OY - 128, 3.6,
           TextEntityAlignment.BOTTOM_CENTER)
     nota_guia(msp, "Frente (cara de anuncio)", (uy(0), OY + 180), (uy(0) - 15, OY + 228))
     llamada(msp, "D4", (uy(yc) + 4, OY + z_ap), (uy(yc) + 30, OY + z_ap + 25))
-    llamada(msp, "D5", (uy(yfoot), OY + 3), (uy(yfoot) + 22, OY + 30))
-    texto(msp, f"Ángulo del contraventeo ≈ {math.degrees(math.atan2(z_ap, yfoot - yc)):.0f}°",
-          uy(yc) + 20, OY + 20, 3.2)
+    llamada(msp, "D5", (uy(ypie), OY + zpie + 6), (uy(ypie) + 22, OY + 40))
+    llamada(msp, "D6", (uy(yc), OY + zf1 + 2), (uy(yc) - 30, OY + 40))
+    texto(msp, f"Ángulo del contraventeo ≈ {math.degrees(math.atan2(z_ap - zf1, ypie - yc)):.0f}°",
+          uy(yc) + 20, OY + 60, 3.2)
 
 
 def dibujar_detalles(msp, D, x0, y0, ancho_celda=228, alto_fig=150, alto_celda=245, cols=3):
