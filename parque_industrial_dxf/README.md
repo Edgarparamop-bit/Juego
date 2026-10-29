@@ -23,7 +23,7 @@ python main.py
 | Calles internas | Nacen del colector y terminan en **retornos rectangulares en T o en L**. No hay glorietas ni anillos. |
 | Retorno | Brazos de 17.00 m de arroyo libre (≥ 15 m), con 9.00 m de ancho y banqueta de 1.50 m alrededor. El tractocamión entra, retrocede a un brazo y sale de frente. |
 | Sección vial | 1.50 banqueta + 9.00 asfalto + 1.50 banqueta = **12.00 m** |
-| Lotes | Frente mínimo de 25.00 m sobre el alineamiento exterior de banqueta. Los cortes son perpendiculares a la calle y en los quiebres del polígono quedan lotes trapezoidales. Área mínima de 600 m². |
+| Lotes | Frente mínimo de 25.00 m sobre el alineamiento exterior de banqueta. Los cortes son perpendiculares a la calle y en los quiebres del polígono quedan lotes trapezoidales. Área mínima de 400 m². |
 | Donación | 10 % del total, en banda perimetral sobre los linderos que no ocupa el colector, más los remanentes de borde. El ancho de la banda se calcula para llegar al 10 %. |
 | Drenaje | Sin topografía. Pendiente longitudinal de 0.5 % hacia la salida, con cota supuesta de 100.00 m. Las cotas de los nodos salen de la ruta más corta sobre los ejes. |
 
@@ -39,11 +39,11 @@ Las calles internas son ramales sin salida. Su único punto de conexión es el c
 |---|---|
 | Área total del polígono (A + B) | 32,096.41 m² |
 | Donación verde perimetral | 3,209.64 m² (**10.000 %**); banda base de 5.12 m más remanentes de borde |
-| Vialidad total | 9,149.60 m² (28.51 %) |
+| Vialidad total | 8,619.88 m² (26.86 %) |
 | &nbsp;&nbsp;Asfalto 9.00 m (calles + retornos) | 6,489.17 m² |
-| &nbsp;&nbsp;Banquetas 1.50 m | 2,660.43 m² |
-| Área vendible (lotes) | 19,737.17 m² (61.49 %) |
-| Número de lotes | 11 (frentes de 25.15 a 286.13 m; áreas de 638 a 4,428 m²) |
+| &nbsp;&nbsp;Banquetas 1.50 m | 2,130.71 m² |
+| Área vendible (lotes) | 20,266.89 m² (63.14 %) |
+| Número de lotes | 15 (frentes de 25.01 a 158.06 m; áreas de 426 a 3,507 m²) |
 | Longitud total de vialidad (ejes, incluye brazos de retorno) | 775.63 m |
 | Punto más bajo / salida de drenaje | X = 19.34, Y = 0.60 (UTM 357898.62, 2285120.28) |
 | Pendiente longitudinal asumida | 0.5 % hacia la salida |
@@ -76,7 +76,7 @@ Las calles internas son ramales sin salida. Su único punto de conexión es el c
 - ✅ Sin traslape lotes-vialidad/banquetas: 0.0000 m2
 - ✅ Sin traslape lotes-donación: 0.0000 m2
 - ✅ Sin traslape vialidad-donación: 0.0000 m2
-- ✅ Frente >= 25.00 m sobre alineamiento exterior de banqueta: 11 lotes; mínimo 25.15 m
+- ✅ Frente >= 25.00 m sobre alineamiento exterior de banqueta: 15 lotes; mínimo 25.01 m
 - ✅ Donación entre 9.9 % y 10.1 %: 10.000 %
 - ✅ Donación perimetral (cada parte toca el lindero): 4 partes; banda base 5.118 m
 - ✅ Punto bajo único en la red: mínimos locales = 1
@@ -94,7 +94,7 @@ Las calles internas son ramales sin salida. Su único punto de conexión es el c
 | &nbsp;&nbsp;Asfalto 9.00 m (calles + retornos) | 7,309.31 m² |
 | &nbsp;&nbsp;Banquetas 1.50 m | 2,413.73 m² |
 | Área vendible (lotes) | 19,163.73 m² (59.71 %) |
-| Número de lotes | 17 (frentes de 25.04 a 191.77 m; áreas de 622 a 2,393 m²) |
+| Número de lotes | 22 (frentes de 25.01 a 108.08 m; áreas de 457 a 1,539 m²) |
 | Longitud total de vialidad (ejes, incluye brazos de retorno) | 850.84 m |
 | Punto más bajo / salida de drenaje | X = 19.34, Y = 0.60 (UTM 357898.62, 2285120.28) |
 | Pendiente longitudinal asumida | 0.5 % hacia la salida |
@@ -126,7 +126,7 @@ Las calles internas son ramales sin salida. Su único punto de conexión es el c
 - ✅ Sin traslape lotes-vialidad/banquetas: 0.0000 m2
 - ✅ Sin traslape lotes-donación: 0.0000 m2
 - ✅ Sin traslape vialidad-donación: 0.0000 m2
-- ✅ Frente >= 25.00 m sobre alineamiento exterior de banqueta: 17 lotes; mínimo 25.04 m
+- ✅ Frente >= 25.00 m sobre alineamiento exterior de banqueta: 22 lotes; mínimo 25.01 m
 - ✅ Donación entre 9.9 % y 10.1 %: 10.000 %
 - ✅ Donación perimetral (cada parte toca el lindero): 4 partes; banda base 5.118 m
 - ✅ Punto bajo único en la red: mínimos locales = 1
@@ -144,7 +144,7 @@ Las calles internas son ramales sin salida. Su único punto de conexión es el c
 | &nbsp;&nbsp;Asfalto 9.00 m (calles + retornos) | 6,606.73 m² |
 | &nbsp;&nbsp;Banquetas 1.50 m | 2,179.49 m² |
 | Área vendible (lotes) | 20,100.55 m² (62.63 %) |
-| Número de lotes | 16 (frentes de 25.04 a 158.68 m; áreas de 615 a 2,255 m²) |
+| Número de lotes | 21 (frentes de 25.01 a 82.77 m; áreas de 501 a 2,191 m²) |
 | Longitud total de vialidad (ejes, incluye brazos de retorno) | 772.77 m |
 | Punto más bajo / salida de drenaje | X = 19.34, Y = 0.60 (UTM 357898.62, 2285120.28) |
 | Pendiente longitudinal asumida | 0.5 % hacia la salida |
@@ -175,7 +175,7 @@ Las calles internas son ramales sin salida. Su único punto de conexión es el c
 - ✅ Sin traslape lotes-vialidad/banquetas: 0.0000 m2
 - ✅ Sin traslape lotes-donación: 0.0000 m2
 - ✅ Sin traslape vialidad-donación: 0.0000 m2
-- ✅ Frente >= 25.00 m sobre alineamiento exterior de banqueta: 16 lotes; mínimo 25.04 m
+- ✅ Frente >= 25.00 m sobre alineamiento exterior de banqueta: 21 lotes; mínimo 25.01 m
 - ✅ Donación entre 9.9 % y 10.1 %: 10.000 %
 - ✅ Donación perimetral (cada parte toca el lindero): 4 partes; banda base 5.118 m
 - ✅ Punto bajo único en la red: mínimos locales = 1
@@ -187,9 +187,9 @@ Las calles internas son ramales sin salida. Su único punto de conexión es el c
 
 | Opción | Lotes | Área vendible | Vialidad | Donación | Long. vial | Cota alta |
 |---|---|---|---|---|---|---|
-| 1 · Colector inferior con peines y retornos | 11 | 19,737.17 m² (61.49 %) | 9,149.60 m² (28.51 %) | 10.000 % | 775.63 m | 102.34 m |
-| 2 · Colector diagonal con ramales | 17 | 19,163.73 m² (59.71 %) | 9,723.04 m² (30.29 %) | 10.000 % | 850.84 m | 102.39 m |
-| 3 · Retornos profundos optimizados | 16 | 20,100.55 m² (62.63 %) | 8,786.22 m² (27.37 %) | 10.000 % | 772.77 m | 102.32 m |
+| 1 · Colector inferior con peines y retornos | 15 | 20,266.89 m² (63.14 %) | 8,619.88 m² (26.86 %) | 10.000 % | 775.63 m | 102.34 m |
+| 2 · Colector diagonal con ramales | 22 | 19,163.73 m² (59.71 %) | 9,723.04 m² (30.29 %) | 10.000 % | 850.84 m | 102.39 m |
+| 3 · Retornos profundos optimizados | 21 | 20,100.55 m² (62.63 %) | 8,786.22 m² (27.37 %) | 10.000 % | 772.77 m | 102.32 m |
 
 ## Limitaciones
 

@@ -39,7 +39,7 @@ BRAZO_RETORNO = 17.00
 # Lotes
 FRENTE_LOTE = 25.00          # mínimo, sobre el alineamiento exterior de banqueta
 FONDO_LIBRE_TRAS_RETORNO = 25.00
-AREA_MIN_LOTE = 600.00       # lote industrial mínimo; piezas menores se unen a la vecina
+AREA_MIN_LOTE = 400.00       # lote industrial mínimo; una pieza menor se une una vez a su vecina
 
 # Donación municipal perimetral
 DONACION_OBJETIVO = 0.100

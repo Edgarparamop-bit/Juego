@@ -281,20 +281,23 @@ def lotificar(polys, row, banda):
                     if partes:
                         piezas.append(partes[0])
                         rem += [dict(geom=z, macro=k) for z in partes[1:]]
-                # piezas menores al lote mínimo se unen a la vecina del mismo frente
-                cambio = True
-                while cambio and len(piezas) > 1:
-                    cambio = False
-                    for i, q in enumerate(piezas):
-                        if q.area < C.AREA_MIN_LOTE:
-                            vec = [j for j in (i - 1, i + 1) if 0 <= j < len(piezas)]
+                # una pieza menor al lote mínimo se une UNA vez a su vecina del mismo frente
+                unidas = [False] * len(piezas)
+                i = 0
+                while i < len(piezas):
+                    if piezas[i].area < C.AREA_MIN_LOTE and not unidas[i]:
+                        vec = [j for j in (i - 1, i + 1) if 0 <= j < len(piezas) and not unidas[j]]
+                        if vec:
                             j = min(vec, key=lambda j: piezas[j].area)
                             u = _clean(unary_union([piezas[i], piezas[j]]))
                             if u.geom_type == "Polygon":
-                                piezas[min(i, j)] = u
-                                piezas.pop(max(i, j))
-                                cambio = True
-                                break
+                                lo_, hi_ = min(i, j), max(i, j)
+                                piezas[lo_] = u
+                                unidas[lo_] = True
+                                piezas.pop(hi_)
+                                unidas.pop(hi_)
+                                continue
+                    i += 1
                 for q in piezas:
                     if q.area >= C.AREA_MIN_LOTE:
                         lotes.append(dict(geom=q, macro=k, calle=sg["calle"]))
