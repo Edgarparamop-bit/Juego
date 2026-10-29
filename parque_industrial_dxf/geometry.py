@@ -1,258 +1,501 @@
-"""Geometría de las 3 opciones de lotificación (shapely)."""
+"""Geometría: colector por el borde bajo, calles con retornos rectangulares,
+donación perimetral, lotificación por frentes de 25 m y red de drenaje."""
 import heapq
 import math
 
-from shapely.geometry import LineString, Point, Polygon, box
+import shapely
+from shapely.geometry import LineString, MultiPoint, Point, Polygon
 from shapely.ops import unary_union
 
 import config as C
 
-HALF_ROW = C.SECCION / 2          # 6.00 m
-HALF_ASF = C.ARROYO / 2           # 4.50 m
-EPS = 1e-6
+H_ROW = C.SECCION / 2          # 6.00
+H_ASF = C.ARROYO / 2           # 4.50
 
 
-def envolvente():
-    return box(0, 0, C.ANCHO, C.LARGO)
-
-
-def _clean(g, e=1e-4):
-    return g.buffer(e, join_style=2).buffer(-e, join_style=2)
-
-
+# ---------------------------------------------------------------- utilidades
 def _polys(g):
     return [p for p in getattr(g, "geoms", [g]) if p.geom_type == "Polygon" and p.area > 1e-3]
 
 
-# ----------------------------------------------------------------------------------
-# Trazos viales por opción. Cada calle: dict(nombre, pts, fondo, orden)
-#   fondo = fondo máximo de los lotes que dan frente a esa calle
-#   orden = prioridad de lotificación (menor primero)
-# Todas las posiciones dependen del ancho de banda de donación b.
-# ----------------------------------------------------------------------------------
-def opcion_1(b):
-    """Espina central recta + 3 calles transversales."""
-    W, L = C.ANCHO, C.LARGO
-    x0, x1, y0, y1 = b, W - b, b, L - b
-    xc = W / 2
-    D = ((y1 - y0) - 3 * C.SECCION) / 6.0          # fondo de lote: sencillo + doble + doble + sencillo
-    calles = [dict(nombre="EJE CENTRAL", pts=[(xc, 0.0), (xc, L)], fondo=D, orden=9)]
-    for k in range(3):
-        y = y0 + D + HALF_ROW + k * (2 * D + C.SECCION)
-        calles.append(dict(nombre=f"CALLE TRANSVERSAL T{k+1}", pts=[(x0, y), (x1, y)], fondo=D, orden=1))
-    accesos = [dict(nombre="Acceso sur (eje central)", punto=(xc, 0.0), borde="SUR"),
-               dict(nombre="Acceso norte (eje central)", punto=(xc, L), borde="NORTE")]
-    punto_bajo = (xc, 0.0)
-    return dict(calles=calles, accesos=accesos, punto_bajo=punto_bajo,
-                notas=[f"Fondo de lote uniforme {D:.2f} m (bloques sencillos al norte y sur, dobles al centro).",
-                       "Las 3 transversales cruzan el eje central y terminan contra la donación perimetral (calles cerradas de 70 m)."])
+def _clean(g, e=1e-3):
+    return g.buffer(e, join_style=2).buffer(-2 * e, join_style=2).buffer(e, join_style=2)
 
 
-def opcion_2(b, Do=30.0, Ds=25.0):
-    """Anillo central con cruce interno, eje de acceso sur y salida sureste."""
-    W, L = C.ANCHO, C.LARGO
-    x0, x1, y0, y1 = b, W - b, b, L - b
-    xa = x0 + Do + HALF_ROW
-    xb = x1 - Do - HALF_ROW
-    ya = y0 + Ds + HALF_ROW
-    yb = y1 - Ds - HALF_ROW
-    ym = (ya + yb) / 2
-    xc = W / 2
-    din = ((xb - xa) - C.SECCION) / 2               # fondo interior (espalda con espalda)
-    dcr = ((ym - ya) - C.SECCION) / 2               # fondo entre anillo y cruce
-    calles = [
-        dict(nombre="ANILLO CENTRAL", pts=[(xa, ya), (xb, ya), (xb, yb), (xa, yb), (xa, ya)], fondo=Do, orden=2),
-        dict(nombre="CRUCE INTERNO", pts=[(xa, ym), (xb, ym)], fondo=dcr, orden=1),
-        dict(nombre="EJE CENTRAL DE ACCESO", pts=[(xc, 0.0), (xc, ya)], fondo=Ds, orden=3),
-        dict(nombre="SALIDA SURESTE", pts=[(xb, ya), (xb, 0.0)], fondo=Ds, orden=3),
-    ]
-    accesos = [dict(nombre="Acceso sur (eje central)", punto=(xc, 0.0), borde="SUR"),
-               dict(nombre="Salida sureste (drenaje y acceso)", punto=(xb, 0.0), borde="SUR")]
-    return dict(calles=calles, accesos=accesos, punto_bajo=(xb, 0.0), anillo_lado=(xa, ya),
-                notas=[f"Anillo de {xb-xa:.2f} x {yb-ya:.2f} m a ejes; lotes exteriores de {Do:.2f} m de fondo.",
-                       f"Interior del anillo dividido por un cruce E-O; lotes interiores de {dcr:.2f} m de fondo.",
-                       "La esquina sureste del anillo baja por un tramo recto al borde sur: ahí está la salida de drenaje."])
+def _unit(a, b):
+    d = (b[0] - a[0], b[1] - a[1])
+    n = math.hypot(*d)
+    return (d[0] / n, d[1] / n)
 
 
-def opcion_3(b, Dw=20.0, Dn=40.0):
-    """Colector en T: colector longitudinal + barra norte + ramales en peine."""
-    W, L = C.ANCHO, C.LARGO
-    x0, x1, y0, y1 = b, W - b, b, L - b
-    xc = W / 2
-    yt = y1 - Dn - HALF_ROW                         # barra de la T
-    xr_w = x0 + Dw + HALF_ROW                       # ramal poniente
-    xr_e = x1 - Dw - HALF_ROW                       # ramal oriente
-    db = ((xc - HALF_ROW) - (xr_w + HALF_ROW)) / 2  # fondo espalda con espalda ramal/colector
-    calles = [
-        dict(nombre="COLECTOR CENTRAL", pts=[(xc, 0.0), (xc, yt)], fondo=db, orden=2),
-        dict(nombre="BARRA NORTE (T)", pts=[(x0, yt), (x1, yt)], fondo=Dn, orden=3),
-        dict(nombre="RAMAL PONIENTE", pts=[(xr_w, yt), (xr_w, y0)], fondo=max(Dw, db), orden=1),
-        dict(nombre="RAMAL ORIENTE", pts=[(xr_e, yt), (xr_e, y0)], fondo=max(Dw, db), orden=1),
-    ]
-    accesos = [dict(nombre="Acceso sur (colector)", punto=(xc, 0.0), borde="SUR")]
-    return dict(calles=calles, accesos=accesos, punto_bajo=(xc, 0.0),
-                fondos_lado={"RAMAL PONIENTE": {-1: db, 1: Dw}, "RAMAL ORIENTE": {1: db, -1: Dw}},
-                notas=[f"Ramales a {Dw+HALF_ROW:.2f} m de la donación: lotes de {Dw:.2f} m hacia la donación y de {db:.2f} m hacia el colector.",
-                       f"Barra norte con lotes de {Dn:.2f} m de fondo hacia el norte.",
-                       "Los ramales terminan contra la donación sur (calles cerradas)."])
+def _rect(c, t, s0, s1, w0, w1):
+    """Rectángulo en el marco (t a lo largo, n = t rotado 90° izq.)."""
+    n = (-t[1], t[0])
+    P = lambda s, w: (c[0] + t[0] * s + n[0] * w, c[1] + t[1] * s + n[1] * w)
+    return Polygon([P(s0, w0), P(s1, w0), P(s1, w1), P(s0, w1)])
 
 
+def poligonos():
+    return {k: Polygon(v) for k, v in C.MACROLOTES.items()}
+
+
+def area_total():
+    return sum(p.area for p in poligonos().values())
+
+
+# ---------------------------------------------------------------- colector
+def colector(k):
+    P = Polygon(C.MACROLOTES[k])
+    chain = LineString([C.MACROLOTES[k][i] for i in C.BORDE_BAJO[k]])
+    best = None
+    for d in (H_ROW, -H_ROW):
+        off = chain.offset_curve(d, join_style=2, mitre_limit=5)
+        if P.contains(off.interpolate(0.5, normalized=True)):
+            best = off
+    cs = list(best.coords)
+    if math.dist(cs[0], chain.coords[0]) > math.dist(cs[-1], chain.coords[0]):
+        cs = cs[::-1]
+    t0 = _unit(cs[1], cs[0])
+    t1 = _unit(cs[-2], cs[-1])
+    cs = [(cs[0][0] + t0[0] * 60, cs[0][1] + t0[1] * 60)] + cs[1:-1] + [(cs[-1][0] + t1[0] * 60, cs[-1][1] + t1[1] * 60)]
+    ln = LineString(cs).intersection(P)
+    ln = max([g for g in getattr(ln, "geoms", [ln]) if g.geom_type == "LineString"], key=lambda g: g.length)
+    cs = list(ln.coords)
+    if cs[0][1] > cs[-1][1]:
+        cs = cs[::-1]
+    return cs   # de sur (bajo) a norte (alto)
+
+
+def _punto_en(cs, s):
+    ln = LineString(cs)
+    p = ln.interpolate(s)
+    p2 = ln.interpolate(min(s + 0.5, ln.length))
+    p1 = ln.interpolate(max(s - 0.5, 0))
+    return (p.x, p.y), _unit((p1.x, p1.y), (p2.x, p2.y))
+
+
+# ---------------------------------------------------------------- calles con retorno
+def _dir(k, nombre, t_col):
+    V = C.MACROLOTES[k]
+    if nombre == "perp":                       # perpendicular al colector, hacia el interior
+        return (-t_col[1], t_col[0])
+    if nombre == "poniente":                   # perpendicular a la colindancia poniente, hacia ella
+        u = _unit(V[0], V[1])
+        return (-u[1], u[0])
+    if nombre == "norte":                      # paralela a la colindancia poniente
+        return _unit(V[0], V[1])
+    if nombre == "este":                       # paralela al lindero norte
+        return _unit(V[1], V[2])
+    raise ValueError(nombre)
+
+
+def _dist_linea(p, a, b):
+    """Distancia con signo a la recta a-b (positiva hacia el interior del macrolote)."""
+    t = _unit(a, b)
+    d = (p[0] - a[0]) * t[1] - (p[1] - a[1]) * t[0]
+    return d if Polygon_orient_cw else -d
+
+
+Polygon_orient_cw = True   # los vértices de config.MACROLOTES van en sentido horario
+
+
+def retorno(end, t, brazos):
+    """ROW y arroyo del retorno rectangular (T o L) al final de una calle."""
+    row, asf = [], []
+    A = C.BRAZO_RETORNO
+    for sg in brazos:
+        if sg > 0:
+            row.append(_rect(end, t, -H_ROW, H_ROW, 0, H_ASF + A + C.BANQUETA))
+            asf.append(_rect(end, t, -H_ASF, H_ASF, 0, H_ASF + A))
+        else:
+            row.append(_rect(end, t, -H_ROW, H_ROW, -(H_ASF + A + C.BANQUETA), 0))
+            asf.append(_rect(end, t, -H_ASF, H_ASF, -(H_ASF + A), 0))
+    row.append(_rect(end, t, -H_ROW, H_ROW, -H_ROW, H_ROW))
+    asf.append(_rect(end, t, -H_ASF, H_ASF, -H_ASF, H_ASF))
+    return unary_union(row), unary_union(asf)
+
+
+def calle(k, col, spec, permitido):
+    """spec = dict(s=..., tramos=[(dir, largo)]); largo: número, ('oeste', d), ('norte_lim', d) o 'max'."""
+    V = C.MACROLOTES[k]
+    s_ini = spec["s"]
+    if isinstance(s_ini, str):          # "auto": primer punto del colector donde el primer tramo mide >= 20 m
+        d_obj = spec["tramos"][0][1][1]
+        for s_ in range(0, int(LineString(col).length)):
+            p_, t_ = _punto_en(col, s_)
+            tt = (-t_[1], t_[0])
+            if not Polygon(V).contains(Point(p_[0] + tt[0] * 20, p_[1] + tt[1] * 20)):
+                tt = (-tt[0], -tt[1])
+            dw = _dist_linea(p_, V[0], V[1])
+            ang = abs(tt[0] * _unit(V[0], V[1])[1] - tt[1] * _unit(V[0], V[1])[0])
+            if (dw - d_obj) / max(ang, 1e-6) >= 20:
+                s_ini = s_
+                break
+    p0, t_col = _punto_en(col, s_ini)
+    pts = [p0]
+    t = None
+    for dname, largo in spec["tramos"]:
+        t = _dir(k, dname, t_col)
+        a = pts[-1]
+        if dname == "perp" and not Polygon(V).contains(Point(a[0] + t[0] * 20, a[1] + t[1] * 20)):
+            t = (-t[0], -t[1])
+        if isinstance(largo, (int, float)):
+            L = largo
+        elif largo == "max":
+            L = None
+        else:
+            ref, d = largo
+            seg = (V[0], V[1]) if ref == "oeste" else (V[1], V[2])
+            # avanzar hasta quedar a distancia d de esa colindancia
+            lo, hi = 0.0, 400.0
+            d0 = _dist_linea(a, *seg)
+            for _ in range(50):
+                m = (lo + hi) / 2
+                q = (a[0] + t[0] * m, a[1] + t[1] * m)
+                if (_dist_linea(q, *seg) > d) == (d0 > d):
+                    lo = m
+                else:
+                    hi = m
+            L = (lo + hi) / 2
+        if L is None:
+            # el mayor largo con retorno dentro del terreno permitido, dejando fondo para lotes
+            best = None
+            for L_ in [x * 1.0 for x in range(10, 400)]:
+                e = (a[0] + t[0] * L_, a[1] + t[1] * L_)
+                a2 = (a[0] + t[0] * (H_ROW + 1), a[1] + t[1] * (H_ROW + 1)) if len(pts) == 1 else a
+                cuerpo = LineString([a2, e]).buffer(H_ROW, cap_style=2)
+                if not permitido.contains(cuerpo):
+                    break
+                br = [sg for sg in (1, -1) if permitido.contains(retorno(e, t, [sg])[0])]
+                if br:
+                    best = (L_, br)
+            if best is None:
+                raise RuntimeError(f"No cabe la calle {spec}")
+            L_max = best[0]
+            L = L_max
+            for L_ in [L_max - x for x in range(0, int(L_max))]:
+                if L_ <= 10:
+                    break
+                e = (a[0] + t[0] * L_, a[1] + t[1] * L_)
+                br = [sg for sg in (1, -1) if permitido.contains(retorno(e, t, [sg])[0])]
+                if br and L_max - L_ >= C.FONDO_LIBRE_TRAS_RETORNO:
+                    L = L_
+                    break
+        pts.append((a[0] + t[0] * L, a[1] + t[1] * L))
+    end = pts[-1]
+    brazos = [sg for sg in (1, -1) if permitido.contains(retorno(end, t, [sg])[0])]
+    return dict(nombre=spec["nombre"], macro=k, pts=pts, t_fin=t, brazos=brazos)
+
+
+# ---------------------------------------------------------------- opciones
+PEINE_A = (70, 150)
+PEINE_B = (70, 150)
 OPCIONES = [
-    dict(clave="opcion_1", corto="Espina central recta", titulo="OPCIÓN 1 — ESPINA CENTRAL RECTA", fn=opcion_1),
-    dict(clave="opcion_2", corto="Anillo central con cruces", titulo="OPCIÓN 2 — ANILLO CENTRAL CON CRUCES", fn=opcion_2),
-    dict(clave="opcion_3", corto="Colector en T con ramales en peine", titulo="OPCIÓN 3 — COLECTOR EN T CON RAMALES EN PEINE", fn=opcion_3),
+    dict(clave="opcion_1", corto="Colector inferior con peines y retornos",
+         titulo="OPCIÓN 1 — COLECTOR INFERIOR CON PEINES Y RETORNOS",
+         calles={"A": [dict(nombre="PEINE A1", s=PEINE_A[0], tramos=[("poniente", "max")]),
+                       dict(nombre="PEINE A2", s=PEINE_A[1], tramos=[("poniente", "max")])],
+                 "B": [dict(nombre="PEINE B1", s=PEINE_B[0], tramos=[("poniente", "max")]),
+                       dict(nombre="PEINE B2", s=PEINE_B[1], tramos=[("poniente", "max")])]},
+         notas=["Calles en peine que salen del colector y corren perpendiculares a la colindancia poniente",
+                "(lotes rectangulares espalda con espalda entre peines); cada una termina en retorno rectangular en T."]),
+    dict(clave="opcion_2", corto="Colector diagonal con ramales",
+         titulo="OPCIÓN 2 — COLECTOR DIAGONAL CON RAMALES",
+         calles={"A": [dict(nombre="RAMAL A", s="auto", tramos=[("perp", ("oeste", 36.0)), ("norte", ("norte_lim", 36.0)), ("este", "max")])],
+                 "B": [dict(nombre="RAMAL B", s="auto", tramos=[("perp", ("oeste", 36.0)), ("norte", ("norte_lim", 36.0)), ("este", "max")])]},
+         notas=["Ramal en J por macrolote (como el plano de referencia): sale del colector en la parte baja,",
+                "sube paralelo a la colindancia poniente y gira al oriente paralelo al lindero norte;",
+                "termina en retorno rectangular cerca del colector, sin conectarse a él."]),
+    dict(clave="opcion_3", corto="Retornos profundos optimizados",
+         titulo="OPCIÓN 3 — RETORNOS PROFUNDOS OPTIMIZADOS",
+         calles={"A": [dict(nombre="CALLE PROFUNDA A", s="auto", tramos=[("perp", ("oeste", 36.0)), ("norte", "max")])],
+                 "B": [dict(nombre="CALLE PROFUNDA B", s="auto", tramos=[("perp", ("oeste", 36.0)), ("norte", "max")])]},
+         notas=["Una sola calle profunda por macrolote: nace en el extremo bajo del colector, sube paralela a",
+                "la colindancia poniente y termina en un retorno rectangular al norte. Es la menor vialidad interna."]),
 ]
 
 
-# ----------------------------------------------------------------------------------
-def vialidad(calles):
-    env = envolvente()
-    lines = [LineString(c["pts"]) for c in calles]
-    row = unary_union([ln.buffer(HALF_ROW, cap_style=2, join_style=2) for ln in lines]).intersection(env)
-    asf = unary_union([ln.buffer(HALF_ASF, cap_style=2, join_style=2) for ln in lines]).intersection(env)
-    row, asf = _clean(row), _clean(asf)
-    banq = _clean(row.difference(asf))
-    return row, asf, banq
+# ---------------------------------------------------------------- lotificación
+def _frentes(segs, edif):
+    """Líneas de alineamiento exterior de banqueta (a 6.00 m del eje) por segmento y lado."""
+    out = []
+    for j, sg in enumerate(segs):
+        a, b = sg["ls"].coords[0], sg["ls"].coords[-1]
+        t = sg["t"]
+        for lado in (1, -1):
+            n = (-t[1] * lado, t[0] * lado)
+            fl = LineString([(a[0] + n[0] * H_ROW, a[1] + n[1] * H_ROW), (b[0] + n[0] * H_ROW, b[1] + n[1] * H_ROW)])
+            util = fl.intersection(edif.buffer(0.05))
+            if util.length > 1.0:
+                out.append(dict(j=j, lado=lado, linea=fl, util=util))
+    return out
 
 
-def banda_donacion(b, row):
-    env = envolvente()
-    interior = box(b, b, C.ANCHO - b, C.LARGO - b)
-    banda = env.difference(interior)
-    return _clean(banda.difference(row)), interior
+def lotificar(polys, row, banda):
+    """Divide el terreno edificable en lotes con frente >= 25.00 m sobre su alineamiento."""
+    lotes, rem = [], []
+    for k, P in polys.items():
+        edif = _clean(P.difference(banda).difference(row))
+        segs = _SEGMENTOS[k]
+        frentes = _frentes(segs, edif)
+        pts, lab, vistos = [], [], set()
+        for gi, f in enumerate(frentes):
+            for g in getattr(f["util"], "geoms", [f["util"]]):
+                if g.geom_type != "LineString":
+                    continue
+                n = max(2, int(g.length / 0.5))
+                for i in range(n + 1):
+                    p = g.interpolate(i * g.length / n)
+                    kp = (round(p.x, 2), round(p.y, 2))
+                    if kp in vistos:
+                        continue
+                    vistos.add(kp)
+                    pts.append(p)
+                    lab.append(gi)
+        vor = shapely.voronoi_polygons(MultiPoint(pts), extend_to=P.buffer(80), ordered=True)
+        celdas = {}
+        for cell, gi in zip(vor.geoms, lab):
+            celdas.setdefault(gi, []).append(cell)
+        for gi, cs in celdas.items():
+            f = frentes[gi]
+            sg = segs[f["j"]]
+            a, t = sg["ls"].coords[0], sg["t"]
+            region = _clean(unary_union([c.buffer(0) for c in cs]).buffer(0).intersection(edif))
+            for comp in _polys(region):
+                fl = comp.boundary.intersection(f["linea"].buffer(0.05))
+                if fl.is_empty or fl.length < 1.0:
+                    rem.append(dict(geom=comp, macro=k))
+                    continue
+                cc = [c for g in getattr(fl, "geoms", [fl]) for c in (g.exterior.coords if g.geom_type == "Polygon" else g.coords)]
+                ss = [(x - a[0]) * t[0] + (y - a[1]) * t[1] for x, y in cc]
+                s0, s1 = min(ss), max(ss)
+                n = int((s1 - s0) / C.FRENTE_LOTE + 1e-6)
+                if n == 0:
+                    rem.append(dict(geom=comp, macro=k))
+                    continue
+                cortes = [-1e4] + [s0 + C.FRENTE_LOTE * i for i in range(1, n)] + [1e4]
+                piezas = []
+                for c0, c1 in zip(cortes[:-1], cortes[1:]):
+                    q = comp.intersection(_rect(a, t, c0, c1, -1e4, 1e4))
+                    partes = sorted(_polys(q), key=lambda z: -z.boundary.intersection(f["linea"].buffer(0.05)).length)
+                    if partes:
+                        piezas.append(partes[0])
+                        rem += [dict(geom=z, macro=k) for z in partes[1:]]
+                # piezas menores al lote mínimo se unen a la vecina del mismo frente
+                cambio = True
+                while cambio and len(piezas) > 1:
+                    cambio = False
+                    for i, q in enumerate(piezas):
+                        if q.area < C.AREA_MIN_LOTE:
+                            vec = [j for j in (i - 1, i + 1) if 0 <= j < len(piezas)]
+                            j = min(vec, key=lambda j: piezas[j].area)
+                            u = _clean(unary_union([piezas[i], piezas[j]]))
+                            if u.geom_type == "Polygon":
+                                piezas[min(i, j)] = u
+                                piezas.pop(max(i, j))
+                                cambio = True
+                                break
+                for q in piezas:
+                    if q.area >= C.AREA_MIN_LOTE:
+                        lotes.append(dict(geom=q, macro=k, calle=sg["calle"]))
+                    else:
+                        rem.append(dict(geom=q, macro=k))
+    return lotes, rem
 
 
-def resolver_banda(fn):
-    """Ancho de banda b tal que la donación (descontando los gaps de acceso) = 10 % exacto."""
-    env_a = C.ANCHO * C.LARGO
-    lo, hi = 1.0, 15.0
-    for _ in range(60):
-        b = (lo + hi) / 2
-        lay = fn(b)
-        row, _, _ = vialidad(lay["calles"])
-        don, _ = banda_donacion(b, row)
-        if don.area / env_a < C.DONACION_OBJETIVO:
-            lo = b
-        else:
-            hi = b
-    return (lo + hi) / 2
+# ---------------------------------------------------------------- vialidad completa
+_SEGMENTOS = {}
 
 
-# ----------------------------------------------------------------------------------
-def _rect_lado(a, t, n, s0, s1, d):
-    P = lambda s, w: (a[0] + t[0] * s + n[0] * w, a[1] + t[1] * s + n[1] * w)
-    return Polygon([P(s0, HALF_ROW), P(s1, HALF_ROW), P(s1, HALF_ROW + d), P(s0, HALF_ROW + d)])
-
-
-def lotificar(calles, row, interior, fondos_lado=None):
-    """Lotes rectangulares de frente 25.00 m sobre el alineamiento exterior de banqueta."""
-    disponible = _clean(interior.difference(row))
-    lotes, remanentes_frente = [], []
-    fondos_lado = fondos_lado or {}
-    for c in sorted(calles, key=lambda c: c["orden"]):
-        for a, bb in zip(c["pts"][:-1], c["pts"][1:]):
-            Lseg = math.dist(a, bb)
-            t = ((bb[0] - a[0]) / Lseg, (bb[1] - a[1]) / Lseg)
-            for side in (1, -1):
-                n = (-t[1] * side, t[0] * side)
-                dmax = fondos_lado.get(c["nombre"], {}).get(side, c["fondo"])
-                # alineamiento exterior de banqueta de este lado
-                al = LineString([(a[0] + n[0] * HALF_ROW - t[0] * HALF_ROW, a[1] + n[1] * HALF_ROW - t[1] * HALF_ROW),
-                                 (bb[0] + n[0] * HALF_ROW + t[0] * HALF_ROW, bb[1] + n[1] * HALF_ROW + t[1] * HALF_ROW)])
-                # tramos del alineamiento que dan a terreno disponible (franja de 0.5 m)
-                probe = al.buffer(0.25, cap_style=2).intersection(disponible.buffer(-1e-3))
-                tramos = []
-                for p in _polys(probe):
-                    ss = [(q[0] - a[0]) * t[0] + (q[1] - a[1]) * t[1] for q in p.exterior.coords]
-                    tramos.append((min(ss), max(ss)))
-                for s0, s1 in sorted(tramos):
-                    s = s0
-                    while s + C.FRENTE_LOTE <= s1 + 1e-6:
-                        # fondo: el mayor posible (<= dmax) que quede dentro del terreno disponible
-                        lo_, hi_ = 0.0, dmax
-                        for _ in range(40):
-                            m = (lo_ + hi_) / 2
-                            r = _rect_lado(a, t, n, s, s + C.FRENTE_LOTE, m)
-                            if r.difference(disponible).area < 1e-3:
-                                lo_ = m
-                            else:
-                                hi_ = m
-                        d = math.floor(lo_ * 1000) / 1000   # truncar: nunca invadir la donación
-                        if d >= C.FONDO_MINIMO:
-                            r = _rect_lado(a, t, n, s, s + C.FRENTE_LOTE, d)
-                            lotes.append(dict(geom=r, calle=c["nombre"], frente=C.FRENTE_LOTE, fondo=d))
-                            disponible = _clean(disponible.difference(r))
-                        s += C.FRENTE_LOTE
-                    if s1 - s > 0.5:
-                        remanentes_frente.append(dict(calle=c["nombre"], largo=round(s1 - s, 2)))
-    remanentes = [p for p in _polys(disponible) if p.area > 1.0]
-    return lotes, remanentes, remanentes_frente
-
-
-# ----------------------------------------------------------------------------------
-def drenaje(calles, punto_bajo):
-    """Red de ejes -> distancias al punto bajo (Dijkstra) -> cotas con pendiente mínima."""
-    segs = []
+def vialidad(op, permitido):
+    polys = poligonos()
+    cols = {k: colector(k) for k in polys}
+    calles = []
+    for k in polys:
+        for sp in op["calles"][k]:
+            calles.append(calle(k, cols[k], sp, permitido[k]))
+    row_l, asf_l = [], []
+    for k, cs in cols.items():
+        ln = LineString(cs)
+        row_l.append(ln.buffer(H_ROW, cap_style=2, join_style=2).intersection(polys[k]))
+        asf_l.append(ln.buffer(H_ASF, cap_style=2, join_style=2).intersection(polys[k]))
     for c in calles:
-        for a, b in zip(c["pts"][:-1], c["pts"][1:]):
-            segs.append(LineString([a, b]))
-    red = unary_union(segs)   # nodifica en las intersecciones
-    key = lambda p: (round(p[0], 3), round(p[1], 3))
-    graf = {}
-    aristas = []
+        ln = LineString(c["pts"])
+        r, a = retorno(c["pts"][-1], c["t_fin"], c["brazos"])
+        row_l += [ln.buffer(H_ROW, cap_style=2, join_style=2), r]
+        asf_l += [ln.buffer(H_ASF, cap_style=2, join_style=2), a]
+    allp = unary_union(list(polys.values()))
+    row = _clean(unary_union(row_l).intersection(allp))
+    asf = _clean(unary_union(asf_l).intersection(allp))
+    # segmentos de frente (colector, tramos de calle y barra de retorno)
+    for k in polys:
+        segs = []
+        cs = cols[k]
+        for a, b in zip(cs[:-1], cs[1:]):
+            segs.append(dict(ls=LineString([a, b]), t=_unit(a, b), calle=f"COLECTOR {k}"))
+        for c in [c for c in calles if c["macro"] == k]:
+            for a, b in zip(c["pts"][:-1], c["pts"][1:]):
+                segs.append(dict(ls=LineString([a, b]), t=_unit(a, b), calle=c["nombre"]))
+            e, t = c["pts"][-1], c["t_fin"]
+            n = (-t[1], t[0])
+            w1 = (H_ASF + C.BRAZO_RETORNO) if 1 in c["brazos"] else 0.0
+            w0 = -(H_ASF + C.BRAZO_RETORNO) if -1 in c["brazos"] else 0.0
+            p0 = (e[0] + n[0] * w0, e[1] + n[1] * w0)
+            p1 = (e[0] + n[0] * w1, e[1] + n[1] * w1)
+            segs.append(dict(ls=LineString([p0, p1]), t=_unit(p0, p1), calle=c["nombre"] + " (RETORNO)"))
+        _SEGMENTOS[k] = segs
+    # cruce del colector bajo la calle municipal entre A y B (solo eje / tubería pluvial)
+    cruce = [cols["A"][-1], cols["B"][0]]
+    return cols, calles, row, asf, cruce
+
+
+# ---------------------------------------------------------------- donación
+def _bordes_perimetrales(k):
+    V = C.MACROLOTES[k]
+    n = len(V)
+    bajo = C.BORDE_BAJO[k]
+    excl = {tuple(sorted((bajo[i], bajo[i + 1]))) for i in range(len(bajo) - 1)}
+    segs = []
+    for i in range(n):
+        j = (i + 1) % n
+        if tuple(sorted((i, j))) in excl:
+            continue
+        segs.append(LineString([V[i], V[j]]))
+    return unary_union(segs)
+
+
+def banda(w, row):
+    polys = poligonos()
+    out = []
+    for k, P in polys.items():
+        b = P.intersection(_bordes_perimetrales(k).buffer(w, cap_style=2, join_style=2))
+        out.append(b)
+    full = _clean(unary_union(out))
+    return full, _clean(full.difference(row))
+
+
+def construir(op):
+    polys = poligonos()
+    At = area_total()
+    permitido = {k: P.buffer(-6.0, join_style=2) for k, P in polys.items()}
+    cols, calles, row, asf, cruce = vialidad(op, permitido)
+
+    def evaluar(w):
+        full, bnd = banda(w, row)
+        lotes, rem = lotificar(polys, row, bnd)
+        don_extra, vial_extra, merge = [], [], []
+        perim = unary_union([P.exterior for P in polys.values()])
+        presupuesto = C.DONACION_OBJETIVO * At - bnd.area
+        for r in sorted(rem, key=lambda r: r["geom"].area):
+            g = r["geom"]
+            if (g.buffer(0.05).intersects(bnd) or g.buffer(0.05).intersects(perim)) and g.area <= presupuesto + 1.0:
+                don_extra.append(g)
+                presupuesto -= g.area
+            else:
+                merge.append(g)   # si ya no cabe en la donación, se integra al lote vecino
+        for g in merge:   # remanente interior sin frente propio: se integra al lote vecino
+            j = max(range(len(lotes)), key=lambda j: g.boundary.intersection(lotes[j]["geom"].buffer(0.05)).length) if lotes else None
+            u = _clean(unary_union([lotes[j]["geom"], g])) if j is not None else None
+            if u is not None and u.geom_type == "Polygon" and g.boundary.intersection(lotes[j]["geom"].buffer(0.05)).length > 0.5:
+                lotes[j]["geom"] = u
+            elif g.buffer(0.05).intersects(bnd) or g.buffer(0.05).intersects(perim):
+                don_extra.append(g)
+            else:
+                vial_extra.append(g)
+        don = _clean(unary_union([bnd] + don_extra))
+        return dict(full=full, don=don, lotes=lotes, vial_extra=vial_extra, w=w)
+
+    lo, hi = 0.5, 15.0
+    ev = None
+    for _ in range(26):
+        m = (lo + hi) / 2
+        ev = evaluar(m)
+        if ev["don"].area / At < C.DONACION_OBJETIVO:
+            lo = m
+        else:
+            hi = m
+    # elegir la evaluación más cercana al 10 % entre los extremos
+    cands = [evaluar(lo), evaluar(hi)]
+    ev = min(cands, key=lambda e: abs(e["don"].area / At - C.DONACION_OBJETIVO))
+
+    row_total = _clean(unary_union([row] + ev["vial_extra"]))
+    asf_total = asf
+    banq = _clean(row_total.difference(asf_total))
+    lotes = ev["lotes"]
+    for L in lotes:
+        L["frente_alineamiento"] = L["geom"].boundary.intersection(row_total.boundary.buffer(0.02)).length
+    lotes.sort(key=lambda L: (L["macro"], -round(L["geom"].centroid.y), L["geom"].centroid.x))
+    for i, L in enumerate(lotes):
+        L["id"] = f"{L['macro']}-{i+1:02d}" if L["macro"] == "A" else f"{L['macro']}-{i+1-sum(1 for x in lotes if x['macro']=='A'):02d}"
+    pb = cols["A"][0]
+    dren = drenaje(cols, calles, cruce, pb)
+    gaps = []
+    for g in _polys(ev["full"].intersection(row_total)):
+        c = g.centroid
+        gaps.append(dict(x=c.x, y=c.y, area=g.area))
+    return dict(op=op, polys=polys, cols=cols, calles=calles, row=row_total, asf=asf_total, banq=banq,
+                don=ev["don"], banda=ev["w"], lotes=lotes, vial_extra=ev["vial_extra"], dren=dren,
+                punto_bajo=pb, gaps=gaps, cruce=cruce, area_total=At)
+
+
+# ---------------------------------------------------------------- drenaje
+def drenaje(cols, calles, cruce, punto_bajo):
+    segs = []
+    for cs in cols.values():
+        segs += [LineString([a, b]) for a, b in zip(cs[:-1], cs[1:])]
+    segs.append(LineString(cruce))
+    for c in calles:
+        segs += [LineString([a, b]) for a, b in zip(c["pts"][:-1], c["pts"][1:])]
+        e, t = c["pts"][-1], c["t_fin"]
+        n = (-t[1], t[0])
+        for sg in c["brazos"]:
+            segs.append(LineString([e, (e[0] + n[0] * sg * (H_ASF + C.BRAZO_RETORNO), e[1] + n[1] * sg * (H_ASF + C.BRAZO_RETORNO))]))
+    segs = [s for s in segs if s.length > 1e-6]
+    # partir cada segmento en los extremos de otros que caen sobre él (uniones en T)
+    ends = [Point(c) for s in segs for c in (s.coords[0], s.coords[-1])]
+    partidos = []
+    for s in segs:
+        cuts = sorted({round(s.project(p), 4) for p in ends if s.distance(p) < 0.05 and 0.05 < s.project(p) < s.length - 0.05})
+        ds = [0.0] + cuts + [s.length]
+        for d0, d1 in zip(ds[:-1], ds[1:]):
+            p0, p1 = s.interpolate(d0), s.interpolate(d1)
+            partidos.append(LineString([(p0.x, p0.y), (p1.x, p1.y)]))
+    red = unary_union([]) if False else None
+    from shapely.geometry import MultiLineString
+    red = MultiLineString(partidos)
+    nodos_ = []
+
+    def key(p):
+        for q in nodos_:
+            if math.dist(p, q) < 0.05:
+                return q
+        q = (round(p[0], 3), round(p[1], 3))
+        nodos_.append(q)
+        return q
+    graf, aristas = {}, []
     for ln in getattr(red, "geoms", [red]):
         cs = list(ln.coords)
         for a, b in zip(cs[:-1], cs[1:]):
-            ka, kb = key(a), key(b)
             w = math.dist(a, b)
             if w < 1e-6:
                 continue
+            ka, kb = key(a), key(b)
             graf.setdefault(ka, []).append((kb, w))
             graf.setdefault(kb, []).append((ka, w))
             aristas.append((ka, kb))
-    src = key(punto_bajo)
+    src = min(graf, key=lambda k: math.dist(k, punto_bajo))
     dist = {src: 0.0}
     pq = [(0.0, src)]
     while pq:
         d, u = heapq.heappop(pq)
         if d > dist.get(u, 1e18):
             continue
-        for v, w in graf.get(u, []):
-            nd = d + w
-            if nd < dist.get(v, 1e18):
-                dist[v] = nd
-                heapq.heappush(pq, (nd, v))
+        for v, w in graf[u]:
+            if d + w < dist.get(v, 1e18):
+                dist[v] = d + w
+                heapq.heappush(pq, (d + w, v))
     cota = {k: C.COTA_PUNTO_BAJO + C.PENDIENTE_LONGITUDINAL * d for k, d in dist.items()}
-    flechas = []
-    for ka, kb in aristas:
-        hi_, lo_ = (ka, kb) if dist[ka] > dist[kb] else (kb, ka)
-        flechas.append((hi_, lo_))
-    # mínimos locales: nodos sin ningún vecino más bajo
     minimos = [k for k in graf if all(dist[v] >= dist[k] for v, _ in graf[k])]
-    return dict(nodos=cota, flechas=flechas, n_minimos=len(minimos), minimos=minimos,
-                longitud=sum(s.length for s in segs))
-
-
-# ----------------------------------------------------------------------------------
-def construir(op):
-    fn = op["fn"]
-    b = resolver_banda(fn)
-    lay = fn(b)
-    row, asf, banq = vialidad(lay["calles"])
-    don, interior = banda_donacion(b, row)
-    lotes, remanentes, rem_frente = lotificar(lay["calles"], row, interior, lay.get("fondos_lado"))
-    for i, L in enumerate(sorted(lotes, key=lambda L: (-round(L["geom"].centroid.y, 0), L["geom"].centroid.x))):
-        L["id"] = f"L-{i+1:02d}"
-    lotes.sort(key=lambda L: L["id"])
-    dren = drenaje(lay["calles"], lay["punto_bajo"])
-    # gaps de donación en cada acceso
-    env = envolvente()
-    banda_llena = env.difference(interior)
-    gaps = []
-    for acc in lay["accesos"]:
-        g = banda_llena.intersection(row).intersection(Point(acc["punto"]).buffer(HALF_ROW + b + 0.5))
-        gaps.append(dict(acceso=acc["nombre"], borde=acc["borde"], x=acc["punto"][0], y=acc["punto"][1],
-                         ancho=C.SECCION, area=g.area))
-    return dict(op=op, b=b, lay=lay, row=row, asf=asf, banq=banq, don=don, interior=interior,
-                lotes=lotes, remanentes=remanentes, rem_frente=rem_frente, dren=dren, gaps=gaps,
-                env=env)
+    flechas = [((ka, kb) if dist[ka] > dist[kb] else (kb, ka)) for ka, kb in aristas]
+    return dict(nodos=cota, flechas=flechas, minimos=minimos, n_minimos=len(minimos),
+                longitud=sum(s.length for s in segs), src=src)
