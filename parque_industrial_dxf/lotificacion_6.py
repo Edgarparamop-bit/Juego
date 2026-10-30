@@ -25,6 +25,12 @@ from geometry import lines, polygons, unit
 GRANDE = 5000.0  # semiplanos de corte (m)
 
 
+def usar_config(modulo) -> None:
+    """Cambia el módulo de configuración (traza) usado por este generador."""
+    global cfg
+    cfg = modulo
+
+
 # ---------------------------------------------------------------------------
 # Geometría
 # ---------------------------------------------------------------------------
@@ -105,6 +111,13 @@ class Macro6:
     avenida: LineString
     lotes: list[Lote6] = field(default_factory=list)
     ancho_donacion: float = 0.0
+    parcela: str = ""
+    vialidad: Polygon | None = None  # vialidad de proyecto dentro de la parcela
+    afectada_plano: float = 0.0
+
+    @property
+    def area_bruta(self) -> float:
+        return self.area_total + (self.vialidad.area if self.vialidad is not None else 0.0)
 
     @property
     def area_total(self) -> float:
@@ -156,7 +169,10 @@ def construir_macro(nombre: str, c: dict, prop: dict) -> Macro6:
         piezas.append(_limpio(pieza))
     piezas.append(_limpio(resto))
 
-    m = Macro6(nombre, c["clave"], poly, donacion, av, ancho_donacion=ancho)
+    m = Macro6(nombre, c["clave"], poly, donacion, av, ancho_donacion=ancho,
+               parcela=c.get("parcela", ""),
+               vialidad=Polygon(c["vialidad_en_parcela"]) if "vialidad_en_parcela" in c else None,
+               afectada_plano=c.get("superficie_afectada_plano", 0.0))
     for p in piezas:
         frente = p.boundary.intersection(av.buffer(0.05)).length
         rect = p.minimum_rotated_rectangle
@@ -287,7 +303,7 @@ def dibujar_propuesta(doc, msp, n: int, macros: list[Macro6], dx: float = 0.0):
             q = lp.centroid if lp.buffer(-6).contains(lp.centroid) else lp.representative_point()
             msp.add_mtext(
                 f"LOTE {l.numero}\\P{m2(l.area)}\\P{100 * l.area / m.area_total:.2f} % DEL "
-                f"{m.nombre}\\PFRENTE A AVENIDA {l.frente:,.2f} m",
+                f"{m.nombre}\\P{getattr(cfg, 'TEXTO_FRENTE', 'FRENTE A AVENIDA')} {l.frente:,.2f} m",
                 dxfattribs={"layer": "TEXTOS", "char_height": 2.2}).set_location(
                 (q.x, q.y), attachment_point=5)
             _cotas(msp, lp, av, vistos)
@@ -300,7 +316,7 @@ def dibujar_propuesta(doc, msp, n: int, macros: list[Macro6], dx: float = 0.0):
     q = av.interpolate(0.62, normalized=True)
     (x0, y0), (x1, y1) = av.coords[0], av.coords[-1]
     ux, uy = unit(x1 - x0, y1 - y0)
-    msp.add_text("AVENIDA LATERAL (DIAGONAL)", height=3.0,
+    msp.add_text(getattr(cfg, "NOMBRE_VIALIDAD", "AVENIDA LATERAL (DIAGONAL)"), height=3.0,
                  dxfattribs={"layer": "VIAL_ASFALTO", "rotation": _rotacion(ux, uy)}) \
         .set_placement((q.x + uy * 7 + dx, q.y - ux * 7), align=TextEntityAlignment.MIDDLE_CENTER)
     # Drenaje
@@ -315,12 +331,66 @@ def dibujar_propuesta(doc, msp, n: int, macros: list[Macro6], dx: float = 0.0):
                   dxfattribs={"layer": "DRENAJE", "char_height": 1.8}).set_location(
         (x - 4, y - 4), attachment_point=3)
     # Tablas
-    _tablas(doc, msp, n, macros, (357880.0 + dx, 2285470.0))
+    tx, ty = getattr(cfg, "TABLA_ORIGEN", (357880.0, 2285470.0))
+    _tablas(doc, msp, n, macros, (tx + dx, ty))
+    hx, hy = getattr(cfg, "TITULO_ORIGEN", (357880.0, 2285500.0))
     msp.add_text(prop["nombre"], height=4.5, dxfattribs={"layer": "TEXTOS"}).set_placement(
-        (357880.0 + dx, 2285500.0), align=TextEntityAlignment.BOTTOM_LEFT)
+        (hx + dx, hy), align=TextEntityAlignment.BOTTOM_LEFT)
     msp.add_mtext(prop["descripcion"], dxfattribs={
         "layer": "TEXTOS", "char_height": 2.0, "width": 160.0}).set_location(
-        (357880.0 + dx, 2285497.0), attachment_point=1)
+        (hx + dx, hy - 3.0), attachment_point=1)
+    if hasattr(cfg, "EJE_VIALIDAD"):
+        _vialidad_proyecto(msp, macros, dx)
+
+
+def _vialidad_proyecto(msp, macros: list[Macro6], dx: float):
+    """Relleno del derecho de vía, eje y secciones acotadas de la vialidad de proyecto."""
+    for m in macros:
+        if m.vialidad is not None:
+            v = translate(m.vialidad, dx, 0)
+            _relleno(msp, v, "VIAL_ASFALTO", 8, 0.7)
+            c = v.representative_point()
+            msp.add_mtext(f"VIALIDAD DE PROYECTO\\P{m2(m.vialidad.area)}",
+                          dxfattribs={"layer": "TEXTOS", "char_height": 1.3}) \
+                .set_location((c.x, c.y), attachment_point=5)
+    eje = LineString(cfg.EJE_VIALIDAD)
+    msp.add_lwpolyline([(x + dx, y) for x, y in eje.coords],
+                       dxfattribs={"layer": "VIAL_ASFALTO", "linetype": "CENTER", "color": 1})
+    lineas = [LineString(v) for v in cfg.VIALIDADES]
+    for m in macros:
+        av = m.avenida
+        for f in cfg.MACROLOTES[m.nombre].get("secciones", []):
+            q = av.interpolate(f, normalized=True)
+            a = av.interpolate(max(0, av.project(q) - 1))
+            b = av.interpolate(min(av.length, av.project(q) + 1))
+            ux, uy = unit(b.x - a.x, b.y - a.y)
+            nx, ny = -uy, ux
+            corte = LineString([(q.x - nx * 18, q.y - ny * 18), (q.x + nx * 18, q.y + ny * 18)])
+            cruces = []
+            for ln in lineas:
+                x = corte.intersection(ln)
+                for g in getattr(x, "geoms", [x]):
+                    if isinstance(g, Point):
+                        cruces.append((g.x - q.x) * nx + (g.y - q.y) * ny)
+            cruces = sorted(set(round(c, 3) for c in cruces))
+            if len(cruces) < 2:
+                continue
+            pts = [(q.x + nx * c + dx, q.y + ny * c) for c in cruces]
+            msp.add_line(pts[0], pts[-1], dxfattribs={"layer": "VIAL_ASFALTO",
+                                                      "linetype": "DASHED"})
+            anchos = []
+            for p0, p1, c0, c1 in zip(pts, pts[1:], cruces, cruces[1:]):
+                if c1 - c0 < 0.3:
+                    continue
+                anchos.append(c1 - c0)
+                msp.add_aligned_dim(p1=p0, p2=p1, distance=3.0, dimstyle=DIMSTYLE,
+                                    dxfattribs={"layer": "COTAS"}).render()
+            total = cruces[-1] - cruces[0]
+            msp.add_text("SECCIÓN: " + " | ".join(f"{w:.2f}m" for w in anchos)
+                         + f"  (TOTAL {total:.2f} m)", height=1.0,
+                         dxfattribs={"layer": "TEXTOS", "rotation": _rotacion(ux, uy)}) \
+                .set_placement((q.x + nx * (cruces[0] - 3.0) + dx, q.y + ny * (cruces[0] - 3.0)),
+                               align=TextEntityAlignment.MIDDLE_CENTER)
 
 
 def _tablas(doc, msp, n: int, macros: list[Macro6], origen):
@@ -329,17 +399,27 @@ def _tablas(doc, msp, n: int, macros: list[Macro6], origen):
     tot = sum(m.area_total for m in macros)
     don = sum(m.area_donacion for m in macros)
     for m in macros:
+        filas.append(("S", f"{m.nombre} {m.parcela}".strip(), ""))
+        if m.vialidad is not None:
+            filas += [
+                ("R", "Área bruta del predio", m2(m.area_bruta)),
+                ("R", "Vialidad de proyecto en el predio", m2(m.vialidad.area)),
+                ("R", "Superficie afectada (según plano)", m2(m.afectada_plano)),
+            ]
         filas += [
-            ("S", m.nombre, ""),
-            ("R", "Área total", m2(m.area_total)),
+            ("R", "Área neta (macrolote)" if m.vialidad is not None else "Área total",
+             m2(m.area_total)),
             ("R", f"Donación ({100 * m.area_donacion / m.area_total:.2f} %)", m2(m.area_donacion)),
             ("R", "Área vendible", m2(m.area_vendible)),
             ("R", "Número de lotes", str(len(m.lotes))),
             ("R", "Área por lote (iguales)", m2(m.lotes[0].area)),
         ]
+    filas.append(("S", "TOTALES DEL PROYECTO", ""))
+    if all(m.vialidad is not None for m in macros):
+        filas += [("R", "Área bruta de predios", m2(sum(m.area_bruta for m in macros))),
+                  ("R", "Vialidad de proyecto", m2(sum(m.vialidad.area for m in macros)))]
     filas += [
-        ("S", "TOTALES DEL PROYECTO", ""),
-        ("R", "Área total", m2(tot)),
+        ("R", "Área neta" if macros[0].vialidad is not None else "Área total", m2(tot)),
         ("R", "Donación", m2(don)),
         ("R", "Porcentaje de donación", f"{100 * don / tot:.2f} %"),
         ("R", "Área vendible", m2(sum(m.area_vendible for m in macros))),
@@ -347,7 +427,8 @@ def _tablas(doc, msp, n: int, macros: list[Macro6], origen):
     ]
     nombre = f"TABLA_CONTENIDOS_P{n}"
     blk = doc.blocks.new(nombre)
-    _dibujar_tabla(blk, filas, 58.0, 30.0, 3.6, cap)
+    w1, w2 = getattr(cfg, "TABLA_ANCHOS", (58.0, 30.0))
+    _dibujar_tabla(blk, filas, w1, w2, 3.6, cap)
     msp.add_blockref(nombre, origen, dxfattribs=cap)
 
     lotes = [("T", "CUADRO DE LOTES", ""), ("H", "LOTE / MACROLOTE", "ÁREA / FRENTE / %")]
@@ -357,14 +438,21 @@ def _tablas(doc, msp, n: int, macros: list[Macro6], origen):
                           f"{l.area:,.2f} m2 / {l.frente:,.2f} m / "
                           f"{100 * l.area / m.area_total:.2f} %"))
     blk2 = doc.blocks.new(nombre + "_LOTES")
-    _dibujar_tabla(blk2, lotes, 36.0, 40.0, 3.4, cap)
-    msp.add_blockref(nombre + "_LOTES", (origen[0] + 94, origen[1]), dxfattribs=cap)
+    _dibujar_tabla(blk2, lotes, *getattr(cfg, "TABLA_LOTES_ANCHOS", (36.0, 40.0)), 3.4, cap)
+    if getattr(cfg, "TABLAS_APILADAS", False):
+        alto = sum(3.6 * (1.3 if t == "T" else 1.0) for t, _, _ in filas)
+        pos = (origen[0], origen[1] - alto - 6.0)
+    else:
+        pos = (origen[0] + 94, origen[1])
+    msp.add_blockref(nombre + "_LOTES", pos, dxfattribs=cap)
 
 
-def escribir(ruta: Path, items: list[tuple[int, list[Macro6], float]]) -> Path:
+def escribir(ruta: Path, items: list[tuple[int, list[Macro6], float]], extra=None) -> Path:
     doc = nuevo_documento()
     msp = doc.modelspace()
     for n, macros, dx in items:
+        if extra is not None:  # contexto debajo de la lotificación
+            extra(doc, msp, dx)
         dibujar_propuesta(doc, msp, n, macros, dx)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     ancho = 450 * len(items)
